@@ -18,6 +18,7 @@ const { registerTaskTools } = require("../dist/tools/tasks.js");
 const { registerContactTools } = require("../dist/tools/contacts.js");
 const { registerNotesTools } = require("../dist/tools/notes.js");
 const { registerSkillsTools } = require("../dist/tools/skills.js");
+const { registerWakeTool } = require("../dist/tools/wake.js");
 
 // ── Mock McpServer ───────────────────────────────────────────────────────
 
@@ -126,6 +127,16 @@ registerNotesTools(notesServer, notesBackend, {
 const { server: skillsServer, tools: skillsTools } = createCapturingServer();
 registerSkillsTools(skillsServer, notesBackend, { skillsPrefix: "betty/skills" });
 
+// The wake gate: what a client sees before Betty is woken. Costed against the
+// widest capability list, since the description names what is configured.
+const { server: wakeServer, tools: wakeTools } = createCapturingServer();
+registerWakeTool(wakeServer, {
+  gate: { wake: () => true },
+  capabilities: ["memory", "skills", "mail", "calendar", "tasks", "contacts"],
+  instructions: async () => "",
+  disabled: new Set(),
+});
+
 const protocols = [
   { label: "IMAP", tools: imapTools, note: "plain text" },
   { label: "JMAP", tools: jmapTools, note: "EMAIL_FORMAT=html adds htmlBody to send_email" },
@@ -134,6 +145,7 @@ const protocols = [
   { label: "CardDAV", tools: cardTools, note: "" },
   { label: "Notes / memory", tools: notesTools, note: "NOTES_BACKEND=webdav|local" },
   { label: "Skills", tools: skillsTools, note: "NOTES_BACKEND=webdav|local" },
+  { label: "Wake gate", tools: wakeTools, note: "all a client sees until wake_betty is called" },
 ];
 
 for (const proto of protocols) {
@@ -162,6 +174,7 @@ const configs = [
     label: "Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills)",
     groups: [jmapTools, calTools, taskTools, cardTools, notesTools, skillsTools],
   },
+  { label: "Everything, gated (before wake_betty)", groups: [wakeTools] },
 ];
 
 for (const cfg of configs) {

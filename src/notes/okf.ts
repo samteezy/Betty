@@ -6,6 +6,10 @@
  * The frontmatter parser handles the scalar/list subset OKF actually uses.
  * That is deliberate: pulling in js-yaml for four keys would break the
  * zero-runtime-dependency principle for no real gain.
+ *
+ * The parse/serialize half is format-agnostic, so `SKILL.md` manifests — which
+ * are markdown-with-frontmatter but explicitly not OKF — are written from here
+ * too, via `buildSkillFrontmatter`.
  */
 
 /** Frontmatter values are scalars or simple lists — no nested maps. */
@@ -31,6 +35,14 @@ export interface ParsedNote {
  */
 export const BETTY_SOURCE = "betty";
 export const REQUIRED_FRONTMATTER = ["type", "title", "description", "timestamp"];
+
+/**
+ * A `SKILL.md` is a skill manifest, not an OKF note: `list_skills` reads `name`
+ * and `description` and skips a folder whose SKILL.md has neither. Leading with
+ * those two keeps a skill Betty writes identical in shape to one written by
+ * hand, or for another tool.
+ */
+export const SKILL_FRONTMATTER = ["name", "description"];
 
 const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
 const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
@@ -116,16 +128,24 @@ function serializeScalar(value: string): string {
   return needsQuoting(flat) ? `"${flat.replace(/"/g, '\\"')}"` : flat;
 }
 
-/** Render frontmatter + body back into a note. */
-export function serializeNote(frontmatter: Frontmatter, body: string): string {
+/**
+ * Render frontmatter + body back into a note. `leadingKeys` is the fixed-order
+ * prefix — OKF's four required keys for a note, `name`/`description` for a
+ * skill manifest.
+ */
+export function serializeNote(
+  frontmatter: Frontmatter,
+  body: string,
+  leadingKeys: readonly string[] = REQUIRED_FRONTMATTER
+): string {
   const lines: string[] = ["---"];
 
-  // Required keys first, in spec order, then everything else alphabetically —
-  // so a note Betty rewrites keeps a stable, diffable key order.
+  // Leading keys first, in the order given, then everything else alphabetically
+  // — so a note Betty rewrites keeps a stable, diffable key order.
   const keys = [
-    ...REQUIRED_FRONTMATTER.filter((k) => k in frontmatter),
+    ...leadingKeys.filter((k) => k in frontmatter),
     ...Object.keys(frontmatter)
-      .filter((k) => !REQUIRED_FRONTMATTER.includes(k))
+      .filter((k) => !leadingKeys.includes(k))
       .sort(),
   ];
 
@@ -160,6 +180,27 @@ export function buildFrontmatter(opts: {
     description: opts.description ?? opts.title,
     timestamp: opts.timestamp,
     source: BETTY_SOURCE,
+    ...opts.extra,
+  };
+}
+
+/**
+ * Build frontmatter for a `SKILL.md` Betty is creating. Deliberately not OKF:
+ * a skill is loaded by `list_skills`, which wants `name` and `description`, and
+ * would treat an OKF `title`/`type` block as a folder that isn't a skill at all.
+ * `source` and `timestamp` ride along so Betty's own skills stay greppable.
+ */
+export function buildSkillFrontmatter(opts: {
+  name: string;
+  description: string;
+  timestamp: string;
+  extra?: Frontmatter;
+}): Frontmatter {
+  return {
+    name: opts.name,
+    description: opts.description,
+    source: BETTY_SOURCE,
+    timestamp: opts.timestamp,
     ...opts.extra,
   };
 }

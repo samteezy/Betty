@@ -130,17 +130,32 @@ export function isUnderPrefix(prefix: string, path: string): boolean {
 }
 
 /**
- * The write guard. Reads may span the whole notes root; writes must land under
- * the memory root. Enforced here, in code — never merely stated in a tool
- * description, which a model is free to ignore.
+ * The write guard. Reads may span the whole notes root — the user's entire
+ * vault, if they point Betty at it. Writes must land inside one of Betty's own
+ * roots: the memory root, plus the skills root when configured. Everything else
+ * under NOTES_ROOT is the user's, and stays readable but untouchable.
+ *
+ * Enforced here, in code — never merely stated in a tool description, which a
+ * model is free to ignore.
+ *
+ * An empty prefix is dropped rather than honoured: `isUnderPrefix("")` means
+ * "unrestricted", which is the right answer for a search scope and exactly the
+ * wrong one for a write scope.
  */
-export function assertWritable(memoryPrefix: string, relPath: string): void {
-  if (!isUnderPrefix(memoryPrefix, relPath)) {
+export function assertWritable(prefixes: readonly string[], relPath: string): void {
+  const scopes = prefixes.filter((prefix) => prefix.length > 0);
+  if (scopes.length === 0) {
     throw new NoteScopeError(
-      `Refusing to write outside the memory root: "${relPath}" is not under "${memoryPrefix}/" ` +
-        `(set MEMORY_ROOT to change where Betty may write)`
+      `Refusing to write "${relPath}": no writable root is configured (set MEMORY_ROOT)`
     );
   }
+  if (scopes.some((prefix) => isUnderPrefix(prefix, relPath))) return;
+
+  const list = scopes.map((prefix) => `"${prefix}/"`).join(" or ");
+  throw new NoteScopeError(
+    `Refusing to write outside Betty's own roots: "${relPath}" is not under ${list} ` +
+      `(set MEMORY_ROOT or SKILLS_ROOT to change where Betty may write)`
+  );
 }
 
 /** Join a root with a relative path for backend consumption. */

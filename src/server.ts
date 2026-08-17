@@ -31,7 +31,16 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.3.0";
+
+/**
+ * Betty's own roots live together under `betty/` inside the notes root, so a
+ * user can point NOTES_ROOT at an existing vault and have everything Betty
+ * writes land in one folder they can inspect, back up, or delete wholesale —
+ * rather than two directories scattered among their own notes.
+ */
+const DEFAULT_MEMORY_ROOT = "betty/memory";
+const DEFAULT_SKILLS_ROOT = "betty/skills";
 
 /** The backends a server instance ended up with. Each is null when unconfigured. */
 export interface Backends {
@@ -213,27 +222,37 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     }
     const notesRoot = normalizeRoot(notesRootRaw);
 
-    // Read scope is the whole notes root; write scope is narrower. Both are
-    // resolved here, at the composition root, so tool handlers never touch env.
+    // Read scope is the whole notes root; write scope is the two roots below.
+    // Both are resolved here, at the composition root, so tool handlers never
+    // touch env.
     const memoryPrefix = resolveSubRoot(
       notesRoot,
-      env.MEMORY_ROOT ?? "memory",
+      env.MEMORY_ROOT ?? DEFAULT_MEMORY_ROOT,
       "MEMORY_ROOT"
     );
+    const skillsPrefix = resolveSubRoot(
+      notesRoot,
+      env.SKILLS_ROOT ?? DEFAULT_SKILLS_ROOT,
+      "SKILLS_ROOT"
+    );
+
+    // Pointing both at one directory would make list_skills enumerate memory
+    // subfolders as skills and drop log.md among them. Fail at startup rather
+    // than let that unpick itself at runtime.
+    if (memoryPrefix === skillsPrefix) {
+      throw new Error(
+        `MEMORY_ROOT and SKILLS_ROOT must be different directories (both resolved to "${memoryPrefix}")`
+      );
+    }
 
     notes = createNotesBackend(env, env.NOTES_BACKEND, notesRoot);
     registerNotesTools(server, notes, {
       notesRoot,
       memoryPrefix,
+      skillsPrefix,
       writeLog: env.MEMORY_LOG !== "false",
     });
-
-    // Skills are opt-in: without SKILLS_ROOT there is nothing to list, and two
-    // tools that always return an empty array would just cost context.
-    if (env.SKILLS_ROOT) {
-      const skillsPrefix = resolveSubRoot(notesRoot, env.SKILLS_ROOT, "SKILLS_ROOT");
-      registerSkillsTools(server, notes, { skillsPrefix });
-    }
+    registerSkillsTools(server, notes, { skillsPrefix });
   }
 
   // Now that email is optional, "nothing configured" is reachable for the first

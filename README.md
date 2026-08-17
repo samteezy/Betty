@@ -150,16 +150,88 @@ npm install
 npm run build
 ```
 
+## Quick start
+
+Every capability is opt-in, **email included** — so the smallest useful Betty is just memory and skills. No mail credentials, no calendar, one app password.
+
+Point her at a folder in Fastmail Files and add her to Claude Code:
+
+```bash
+claude mcp add betty \
+  -e NOTES_BACKEND=webdav \
+  -e WEBDAV_URL=https://myfiles.fastmail.com \
+  -e WEBDAV_USERNAME=you@fastmail.com \
+  -e WEBDAV_PASSWORD=your-files-app-password \
+  -e NOTES_ROOT=/you@fastmail.com/Notes \
+  -e SKILLS_ROOT=/you@fastmail.com/Notes/skills \
+  -- npx betty-mcp
+```
+
+Or, for Claude Desktop, in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "betty": {
+      "command": "npx",
+      "args": ["betty-mcp"],
+      "env": {
+        "NOTES_BACKEND": "webdav",
+        "WEBDAV_URL": "https://myfiles.fastmail.com",
+        "WEBDAV_USERNAME": "you@fastmail.com",
+        "WEBDAV_PASSWORD": "your-files-app-password",
+        "NOTES_ROOT": "/you@fastmail.com/Notes",
+        "SKILLS_ROOT": "/you@fastmail.com/Notes/skills"
+      }
+    }
+  }
+}
+```
+
+Create the Files app password under Fastmail **Settings > Privacy & Security > App passwords**, scoped to **Files (WebDAV)**. It is a different credential from the JMAP API token used for email — you don't need that one here.
+
+`NOTES_ROOT` must already exist on the server; `memory/` and `skills/` are created on first write.
+
+### Prefer a local folder?
+
+Swap the WebDAV variables for a path and nothing else changes — no credentials at all:
+
+```json
+{
+  "mcpServers": {
+    "betty": {
+      "command": "npx",
+      "args": ["betty-mcp"],
+      "env": {
+        "NOTES_BACKEND": "local",
+        "NOTES_ROOT": "/Users/you/Notes",
+        "SKILLS_ROOT": "/Users/you/Notes/skills"
+      }
+    }
+  }
+}
+```
+
+Useful when your notes are already synced by something else — Dropbox, iCloud Drive, Syncthing, a git repo — or when you just want to try Betty before wiring up storage.
+
+From there, add email with `JMAP_TOKEN` (or the `IMAP_*` set), calendars with `CALDAV_URL`, and contacts with `CARDDAV_URL`. See [Configuration](#configuration) for the full reference and [Usage with MCP clients](#usage-with-mcp-clients) for fuller examples.
+
 ## Configuration
 
 The server is configured entirely through environment variables.
+
+Every capability is opt-in and activates on its own trigger variable — email on `EMAIL_BACKEND` (or a credential), calendar and tasks on `CALDAV_URL`, contacts on `CARDDAV_URL`, notes and memory on `NOTES_BACKEND`, skills on `SKILLS_ROOT`. Configure one or all of them. If *nothing* is configured the server refuses to start rather than presenting an empty toolbox.
 
 ### Backend selection
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `EMAIL_BACKEND` | `"jmap"` or `"imap"` | `"jmap"` |
+| `EMAIL_BACKEND` | `"jmap"`, `"imap"`, or `"none"` | `"jmap"` when a credential is present — see below |
 | `EMAIL_FORMAT` | `"plain"` or `"html"` | `"plain"` |
+
+**Email is optional.** It activates when `EMAIL_BACKEND` is set, or when `JMAP_TOKEN` or `IMAP_HOST` is present — so setting just `JMAP_TOKEN` selects JMAP, as it always has. With no email variables at all, the email tools are simply not registered and Betty runs as a pure memory-and-skills layer. `EMAIL_BACKEND=none` disables email even when a token is present.
+
+Naming a backend without its credentials is still an error, not a request to run without email: `EMAIL_BACKEND=jmap` with no `JMAP_TOKEN` fails at startup.
 
 When set to `html`, the `send_message` tool requires an `htmlBody` field in addition to `textBody`, and messages are sent as multipart with both plain text and HTML. When set to `plain` (the default), only `textBody` is exposed — the LLM cannot generate HTML email.
 
@@ -167,7 +239,7 @@ When set to `html`, the `send_message` tool requires an `htmlBody` field in addi
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `JMAP_TOKEN` | Yes | Fastmail API token |
+| `JMAP_TOKEN` | Yes, for JMAP | Fastmail API token. Also selects the JMAP backend on its own. |
 | `JMAP_SESSION_URL` | No | JMAP session URL (default: `https://api.fastmail.com/.well-known/jmap`) |
 
 To get a token, go to Fastmail **Settings > Privacy & Security > API tokens** and create a token with the email scopes you need.
@@ -176,9 +248,9 @@ To get a token, go to Fastmail **Settings > Privacy & Security > API tokens** an
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `IMAP_HOST` | Yes | IMAP server hostname (e.g. `imap.gmail.com`) |
-| `IMAP_USER` | Yes | Login username |
-| `IMAP_PASSWORD` | Yes | Login password or app-specific password |
+| `IMAP_HOST` | Yes, for IMAP | IMAP server hostname (e.g. `imap.gmail.com`) |
+| `IMAP_USER` | Yes, for IMAP | Login username |
+| `IMAP_PASSWORD` | Yes, for IMAP | Login password or app-specific password |
 | `IMAP_PORT` | No | Server port (default: `993`) |
 | `IMAP_TLS` | No | Use TLS (default: `true`) |
 
@@ -199,7 +271,7 @@ If `SMTP_HOST` is not set, the IMAP backend is read-only and the `send_message` 
 
 ### CalDAV (calendar)
 
-Calendar and task tools activate when `CALDAV_URL` is set. Works alongside any email backend. Tasks use CalDAV VTODO — supported by Fastmail, iCloud, Nextcloud, Radicale, and most CalDAV servers.
+Calendar and task tools activate when `CALDAV_URL` is set — alongside any email backend, or with none at all. Tasks use CalDAV VTODO — supported by Fastmail, iCloud, Nextcloud, Radicale, and most CalDAV servers.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -210,7 +282,9 @@ Calendar and task tools activate when `CALDAV_URL` is set. Works alongside any e
 
 ### Contacts
 
-When using the JMAP backend, contact tools activate automatically via JMAP Contacts (RFC 9610) — no extra configuration needed. To use CardDAV instead (or with the IMAP backend), set `CARDDAV_URL`:
+When using the JMAP backend, contact tools activate automatically via JMAP Contacts (RFC 9610) — no extra configuration needed. They ride on the email backend's JMAP session, so they need JMAP email to be configured.
+
+To use CardDAV instead — with the IMAP backend, or with no email backend at all — set `CARDDAV_URL`:
 
 #### CardDAV (optional override)
 
@@ -223,7 +297,7 @@ When using the JMAP backend, contact tools activate automatically via JMAP Conta
 
 ### Notes, memory, and skills
 
-This is what makes Betty an assistant rather than a mail client with extra steps. Notes tools activate when `NOTES_BACKEND` is set, and work alongside any email backend.
+This is what makes Betty an assistant rather than a mail client with extra steps. Notes tools activate when `NOTES_BACKEND` is set — alongside any email backend, or on their own with no email configured at all.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -385,9 +459,9 @@ Email and contacts use JMAP (automatic), calendar uses CalDAV. To use CardDAV fo
 }
 ```
 
-### Memory and skills only (local folder)
+### No email (calendar, contacts, memory, and skills)
 
-Betty needs an email backend configured, but nothing stops you from disabling the email tools and running her purely as a portable memory layer:
+Email is opt-in, so you can leave it out entirely and still get everything else. Nothing needs disabling — the email tools are never registered:
 
 ```json
 {
@@ -396,17 +470,24 @@ Betty needs an email backend configured, but nothing stops you from disabling th
       "command": "npx",
       "args": ["betty-mcp"],
       "env": {
-        "EMAIL_BACKEND": "jmap",
-        "JMAP_TOKEN": "your-fastmail-api-token",
+        "CALDAV_URL": "https://caldav.fastmail.com/",
+        "CALDAV_USERNAME": "you@fastmail.com",
+        "CALDAV_PASSWORD": "your-caldav-app-password",
+        "CARDDAV_URL": "https://carddav.fastmail.com/",
+        "CARDDAV_USERNAME": "you@fastmail.com",
+        "CARDDAV_PASSWORD": "your-carddav-app-password",
         "NOTES_BACKEND": "local",
         "NOTES_ROOT": "/Users/you/Notes",
-        "SKILLS_ROOT": "/Users/you/Notes/skills",
-        "DISABLED_TOOLS": "list_folders,list_messages,get_message,search_messages,send_message,get_attachment"
+        "SKILLS_ROOT": "/Users/you/Notes/skills"
       }
     }
   }
 }
 ```
+
+Contacts come from CardDAV here because JMAP contacts need a JMAP email session. For memory and skills on their own, see [Quick start](#quick-start).
+
+If you have a mail credential in your environment for other reasons and want email off regardless, set `EMAIL_BACKEND=none`.
 
 ## Tools
 
@@ -488,7 +569,7 @@ Tools are only registered when the matching backend is configured. Combine rows 
 | Notes & memory | 4 | ~403 |
 | Skills | 2 | ~120 |
 
-**Example totals:** IMAP only ~373 · Notes + Skills only ~523 · IMAP + CalDAV + Tasks ~947 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,683
+**Example totals:** IMAP only ~373 · Notes + Skills only ~523 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,098 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,683
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

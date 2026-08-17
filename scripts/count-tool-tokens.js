@@ -153,6 +153,7 @@ const configs = [
   { label: "JMAP only", groups: [jmapTools] },
   { label: "IMAP + CalDAV + Tasks", groups: [imapTools, calTools, taskTools] },
   { label: "Notes + Skills only", groups: [notesTools, skillsTools] },
+  { label: "No email (CalDAV + Tasks + Notes + Skills)", groups: [calTools, taskTools, notesTools, skillsTools] },
   { label: "JMAP + CalDAV + Tasks + CardDAV", groups: [jmapTools, calTools, taskTools, cardTools] },
   {
     label: "Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills)",

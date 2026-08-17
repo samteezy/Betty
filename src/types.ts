@@ -216,3 +216,54 @@ export interface ContactsBackend {
   getContact(href: string): Promise<Contact | null>;
   searchContacts(options: SearchContactsOptions): Promise<Contact[]>;
 }
+
+// --- Notes types ---
+
+/** One entry in a directory listing. Paths are relative to the notes root. */
+export interface NoteEntry {
+  /** POSIX-style path relative to the notes root, e.g. "memory/people/sam.md" */
+  path: string;
+  /** Final path segment, e.g. "sam.md" */
+  name: string;
+  isDirectory: boolean;
+  size?: number;
+  modified?: string;
+  etag?: string;
+}
+
+export interface NoteRead {
+  text: string;
+  /**
+   * Opaque version token for the content just read. Pass it back to write()
+   * to make the write conditional on nothing having changed since.
+   */
+  etag?: string;
+}
+
+export interface NoteWriteResult {
+  etag?: string;
+}
+
+/**
+ * Storage for notes, memory, and skills. Deliberately thin and path-based so
+ * WebDAV and the local filesystem can both satisfy it. Scope enforcement
+ * (read within NOTES_ROOT, write only within MEMORY_ROOT) lives in the tool
+ * layer, above this interface.
+ */
+export interface NotesBackend {
+  connect(): Promise<void>;
+  /** Single level, non-recursive. Returns [] for a directory that isn't there. */
+  list(dir: string): Promise<NoteEntry[]>;
+  /** Throws NoteNotFoundError when the path doesn't exist. */
+  read(path: string): Promise<NoteRead>;
+  /**
+   * Write a file, creating parent directories as needed.
+   *
+   * `ifMatch` given     — conditional update; throws NoteConflictError if the
+   *                       stored version no longer matches.
+   * `ifMatch` omitted   — create-only; throws NoteConflictError if the file
+   *                       already exists. There is no unconditional overwrite,
+   *                       by design.
+   */
+  write(path: string, text: string, ifMatch?: string): Promise<NoteWriteResult>;
+}

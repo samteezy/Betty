@@ -1,11 +1,11 @@
 {
-  "name": "better-email-mcp",
-  "version": "0.6.4",
-  "description": "MCP server for email, calendar, tasks, and contacts via IMAP, JMAP, CalDAV, and CardDAV",
+  "name": "betty-mcp",
+  "version": "0.7.0",
+  "description": "Betty — an assistant layer for agentic platforms. Email, calendar, tasks, contacts, notes, memory, and skills, stored in your own file storage.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "better-email-mcp": "dist/index.js"
+    "betty-mcp": "dist/index.js"
   },
   "files": [
     "dist"
@@ -34,7 +34,11 @@
     "caldav",
     "carddav",
     "calendar",
-    "contacts"
+    "contacts",
+    "webdav",
+    "notes",
+    "memory",
+    "skills"
   ],
   "author": "",
   "license": "ISC",

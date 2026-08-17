@@ -16,6 +16,8 @@ const { registerEmailTools } = require("../dist/tools/register.js");
 const { registerCalendarTools } = require("../dist/tools/calendar.js");
 const { registerTaskTools } = require("../dist/tools/tasks.js");
 const { registerContactTools } = require("../dist/tools/contacts.js");
+const { registerNotesTools } = require("../dist/tools/notes.js");
+const { registerSkillsTools } = require("../dist/tools/skills.js");
 
 // ── Mock McpServer ───────────────────────────────────────────────────────
 
@@ -73,6 +75,10 @@ const contactsBackend = {
   listContacts: noopArr, getContact: noopNull, searchContacts: noopArr,
 };
 
+const notesBackend = {
+  connect: noop, list: noopArr, read: noop, write: noop,
+};
+
 // ── Token estimation ─────────────────────────────────────────────────────
 
 const CHARS_PER_TOKEN = 3.5;
@@ -109,12 +115,22 @@ registerTaskTools(taskServer, calendarBackend);
 const { server: cardServer, tools: cardTools } = createCapturingServer();
 registerContactTools(cardServer, contactsBackend);
 
+// Notes / memory (WebDAV or local)
+const { server: notesServer, tools: notesTools } = createCapturingServer();
+registerNotesTools(notesServer, notesBackend, { notesRoot: "/notes", memoryPrefix: "memory" });
+
+// Skills (same storage as notes)
+const { server: skillsServer, tools: skillsTools } = createCapturingServer();
+registerSkillsTools(skillsServer, notesBackend, { skillsPrefix: "skills" });
+
 const protocols = [
   { label: "IMAP", tools: imapTools, note: "plain text" },
   { label: "JMAP", tools: jmapTools, note: "EMAIL_FORMAT=html adds htmlBody to send_email" },
   { label: "CalDAV (calendar)", tools: calTools, note: "" },
   { label: "CalDAV (tasks)", tools: taskTools, note: "" },
   { label: "CardDAV", tools: cardTools, note: "" },
+  { label: "Notes / memory", tools: notesTools, note: "NOTES_BACKEND=webdav|local" },
+  { label: "Skills", tools: skillsTools, note: "requires SKILLS_ROOT" },
 ];
 
 for (const proto of protocols) {
@@ -136,7 +152,12 @@ const configs = [
   { label: "IMAP only", groups: [imapTools] },
   { label: "JMAP only", groups: [jmapTools] },
   { label: "IMAP + CalDAV + Tasks", groups: [imapTools, calTools, taskTools] },
-  { label: "JMAP + CalDAV + Tasks + CardDAV (full suite)", groups: [jmapTools, calTools, taskTools, cardTools] },
+  { label: "Notes + Skills only", groups: [notesTools, skillsTools] },
+  { label: "JMAP + CalDAV + Tasks + CardDAV", groups: [jmapTools, calTools, taskTools, cardTools] },
+  {
+    label: "Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills)",
+    groups: [jmapTools, calTools, taskTools, cardTools, notesTools, skillsTools],
+  },
 ];
 
 for (const cfg of configs) {

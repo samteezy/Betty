@@ -65,12 +65,73 @@ export class WebDavClient {
     });
   }
 
+  /**
+   * GET a resource along with its ETag, for callers that intend to write it
+   * back under an If-Match precondition.
+   */
+  async getWithEtag(
+    path: string,
+    extraHeaders?: Record<string, string>
+  ): Promise<{ body: string; etag?: string }> {
+    const res = await this.requestRaw("GET", path, undefined, extraHeaders);
+    return { body: res.body, etag: res.headers.get("etag") ?? undefined };
+  }
+
+  /**
+   * PUT a resource and return the ETag the server assigned. Servers are not
+   * required to echo one back, so a follow-up read may be needed to learn it.
+   */
+  async putWithEtag(
+    path: string,
+    body: string,
+    extraHeaders?: Record<string, string>
+  ): Promise<{ etag?: string }> {
+    const res = await this.requestRaw("PUT", path, body, {
+      "Content-Type": "text/calendar; charset=utf-8",
+      ...extraHeaders,
+    });
+    return { etag: res.headers.get("etag") ?? undefined };
+  }
+
+  async delete(path: string, ifMatch?: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      path,
+      undefined,
+      ifMatch ? { "If-Match": ifMatch } : undefined
+    );
+  }
+
+  /**
+   * Create a collection. Resolves silently when the collection already exists
+   * (405 Method Not Allowed), so callers can make parent directories
+   * idempotently.
+   */
+  async mkcol(path: string): Promise<void> {
+    try {
+      await this.request("MKCOL", path, undefined);
+    } catch (err) {
+      if (err instanceof WebDavError && err.status === 405) return;
+      throw err;
+    }
+  }
+
   private async request(
     method: string,
     path: string,
     body: string | undefined,
     extraHeaders?: Record<string, string>
   ): Promise<string> {
+    const res = await this.requestRaw(method, path, body, extraHeaders);
+    return res.body;
+  }
+
+  private async requestRaw(
+    method: string,
+    path: string,
+    body: string | undefined,
+    extraHeaders?: Record<string, string>
+  ): Promise<{ body: string; headers: Headers; status: number }> {
     const url = this.buildUrl(path);
     const headers: Record<string, string> = {
       Authorization: this.authHeader(),
@@ -108,7 +169,7 @@ export class WebDavClient {
       );
     }
 
-    return res.text();
+    return { body: await res.text(), headers: res.headers, status: res.status };
   }
 
   private buildUrl(path: string): string {

@@ -10,7 +10,13 @@ import { registerEmailTools } from "./tools/register.js";
 import { registerCalendarTools } from "./tools/calendar.js";
 import { registerTaskTools } from "./tools/tasks.js";
 import { registerContactTools } from "./tools/contacts.js";
-import { EmailBackend, ContactsBackend } from "./types.js";
+import { registerNotesTools } from "./tools/notes.js";
+import { registerSkillsTools } from "./tools/skills.js";
+import { WebDavClient } from "./webdav/client.js";
+import { LocalNotesBackend } from "./notes/local-backend.js";
+import { WebDavNotesBackend } from "./notes/webdav-backend.js";
+import { normalizeRoot, resolveSubRoot } from "./notes/paths.js";
+import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 function createBackend(): EmailBackend {
   const backendType = process.env.EMAIL_BACKEND ?? "jmap";
@@ -70,9 +76,35 @@ function createBackend(): EmailBackend {
   throw new Error(`Unknown backend: ${backendType}`);
 }
 
+/**
+ * Notes storage — WebDAV or a plain local folder. Betty's memory and skills
+ * live here rather than inside any one agentic platform, so they travel with
+ * the user.
+ */
+function createNotesBackend(backendType: string, notesRoot: string): NotesBackend {
+  if (backendType === "local") {
+    return new LocalNotesBackend(notesRoot);
+  }
+
+  if (backendType === "webdav") {
+    const url = process.env.WEBDAV_URL;
+    const username = process.env.WEBDAV_USERNAME;
+    const password = process.env.WEBDAV_PASSWORD;
+    if (!url || !username || !password) {
+      throw new Error(
+        "WEBDAV_URL, WEBDAV_USERNAME, and WEBDAV_PASSWORD are required when NOTES_BACKEND=webdav"
+      );
+    }
+    const client = new WebDavClient({ baseUrl: url, username, password });
+    return new WebDavNotesBackend(client, { baseUrl: url, root: notesRoot });
+  }
+
+  throw new Error(`Unknown notes backend: ${backendType} (expected "webdav" or "local")`);
+}
+
 const server = new McpServer({
-  name: "better-email-mcp",
-  version: "0.6.4",
+  name: "betty-mcp",
+  version: "0.7.0",
 });
 
 const backend = createBackend();
@@ -119,10 +151,43 @@ if (process.env.CARDDAV_URL) {
   registerContactTools(server, contactsBackend);
 }
 
+// Notes, memory, and skills — activate when NOTES_BACKEND is set
+let notesBackend: NotesBackend | null = null;
+if (process.env.NOTES_BACKEND) {
+  const notesRootRaw = process.env.NOTES_ROOT;
+  if (!notesRootRaw) {
+    throw new Error("NOTES_ROOT is required when NOTES_BACKEND is set");
+  }
+  const notesRoot = normalizeRoot(notesRootRaw);
+
+  // Read scope is the whole notes root; write scope is narrower. Both are
+  // resolved here, at the composition root, so tool handlers never touch env.
+  const memoryPrefix = resolveSubRoot(
+    notesRoot,
+    process.env.MEMORY_ROOT ?? "memory",
+    "MEMORY_ROOT"
+  );
+
+  notesBackend = createNotesBackend(process.env.NOTES_BACKEND, notesRoot);
+  registerNotesTools(server, notesBackend, {
+    notesRoot,
+    memoryPrefix,
+    writeLog: process.env.MEMORY_LOG !== "false",
+  });
+
+  // Skills are opt-in: without SKILLS_ROOT there is nothing to list, and two
+  // tools that always return an empty array would just cost context.
+  if (process.env.SKILLS_ROOT) {
+    const skillsPrefix = resolveSubRoot(notesRoot, process.env.SKILLS_ROOT, "SKILLS_ROOT");
+    registerSkillsTools(server, notesBackend, { skillsPrefix });
+  }
+}
+
 async function main() {
   await backend.connect();
   if (calendarBackend) await calendarBackend.connect();
   if (contactsBackend) await contactsBackend.connect();
+  if (notesBackend) await notesBackend.connect();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -1,6 +1,6 @@
 {
   "name": "betty-mcp",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Betty — an assistant layer for agentic platforms. Email, calendar, tasks, contacts, notes, memory, and skills, stored in your own file storage.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

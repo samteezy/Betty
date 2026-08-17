@@ -179,6 +179,19 @@ describe("deferred capabilities", () => {
     expect(gate.openGroup("telepathy")).toBe("unknown");
   });
 
+  it("neither lists nor opens a capability whose tools were all disabled", () => {
+    // `wrap` files the group before the tools register, so a user who put every
+    // mail tool in DISABLED_TOOLS leaves an empty one behind. From the model's
+    // side that is indistinguishable from mail never having been configured.
+    const { server } = stubServer();
+    const gate = new ToolGate(server);
+    gate.wrap(server, "mail", { deferred: true });
+    gate.arm();
+    gate.wake();
+    expect(gate.inventory).toEqual([]);
+    expect(gate.openGroup("mail")).toBe("unknown");
+  });
+
   it("reports a second open as already-open, without a second notification", () => {
     const { gate, notified } = tiered();
     gate.wake();
@@ -186,6 +199,23 @@ describe("deferred capabilities", () => {
     const before = notified.length;
     expect(gate.openGroup("mail")).toBe("already-open");
     expect(notified).toHaveLength(before);
+  });
+
+  it("refuses to call a drawer open while Betty is asleep", () => {
+    // Unreachable through `open_drawer`, which is gated itself — but the answer
+    // has to be honest anyway, because "opened" here would name tools that the
+    // client's next `tools/list` does not contain.
+    const { gate, visible, notified } = tiered();
+    expect(gate.openGroup("mail")).toBe("asleep");
+    expect(visible()).toEqual([]);
+    expect(notified).toHaveLength(0);
+  });
+
+  it("still honours a request made while asleep at the next wake", () => {
+    const { gate, visible } = tiered();
+    gate.openGroup("mail");
+    gate.wake();
+    expect(visible()).toContain("list_messages");
   });
 
   it("brings back a capability that was opened before the gate re-armed", () => {

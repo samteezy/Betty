@@ -390,8 +390,27 @@ describe("wake gate", () => {
     expect(h.listChangedCount()).toBe(1);
   });
 
-  it("gates the mail and calendar tools too", async () => {
+  it("gates the mail and calendar tools too, and reveals them in the same wake", async () => {
     const h = gated({ ...FULL_HOUSE });
+
+    expect(h.names()).toEqual(["wake_betty"]);
+    await h.call("wake_betty", { loaded: true });
+
+    // One wake, one list change: everything configured comes online together.
+    // Nothing is left to open, so the tool that opens things never registers.
+    expect(h.names()).toEqual(expect.arrayContaining(["list_messages", "list_events"]));
+    expect(h.allNames()).not.toContain("open_drawer");
+    expect(h.listChangedCount()).toBe(1);
+
+    // Any value but "true" reads as off — the guard against someone restoring
+    // the old `!== "false"` and reintroducing the second list change.
+    const off = gated({ ...FULL_HOUSE, BETTY_PROGRESSIVE_TOOLS: "false" });
+    await off.call("wake_betty", { loaded: true });
+    expect(off.allNames()).not.toContain("open_drawer");
+  });
+
+  it("holds mail and calendar back when progressive disclosure is asked for", async () => {
+    const h = gated({ ...FULL_HOUSE, BETTY_PROGRESSIVE_TOOLS: "true" });
 
     expect(h.names()).toEqual(["wake_betty"]);
     await h.call("wake_betty", { loaded: true });
@@ -409,19 +428,12 @@ describe("wake gate", () => {
     expect(h.names()).toEqual(expect.arrayContaining(["list_events"]));
   });
 
-  it("reveals everything at once when progressive disclosure is off", async () => {
-    const h = gated({ ...FULL_HOUSE, BETTY_PROGRESSIVE_TOOLS: "false" });
-
-    await h.call("wake_betty", { loaded: true });
-
-    expect(h.names()).toEqual(expect.arrayContaining(["list_messages", "list_events"]));
-    // Nothing left to open, so the tool that opens things never registers.
-    expect(h.allNames()).not.toContain("open_drawer");
-  });
-
   it("lists the held-back tools by name in the wake reply", async () => {
     // A capability a model cannot name is a capability it will not ask for.
-    const body = await gated({ ...FULL_HOUSE }).text("wake_betty");
+    const body = await gated({
+      ...FULL_HOUSE,
+      BETTY_PROGRESSIVE_TOOLS: "true",
+    }).text("wake_betty");
 
     expect(body).toContain("- **mail**: ");
     expect(body).toContain("list_messages");
@@ -523,6 +535,23 @@ describe("wake gate", () => {
         CALDAV_URL: "https://caldav.example/",
         CALDAV_USERNAME: "you",
         CALDAV_PASSWORD: "pw",
+      });
+      backends.calendar = { connect: async () => {} } as unknown as Backends["calendar"];
+
+      await connectAll(backends);
+      await h.call("wake_betty", { loaded: true });
+
+      // Calendar came online with the wake; mail is gone rather than merely shut.
+      expect(h.names()).toEqual(expect.arrayContaining(["list_events"]));
+      expect(h.names()).not.toContain("list_messages");
+    });
+
+    it("leaves a withdrawn capability unnameable to open_drawer", async () => {
+      const { h, backends } = boot({
+        CALDAV_URL: "https://caldav.example/",
+        CALDAV_USERNAME: "you",
+        CALDAV_PASSWORD: "pw",
+        BETTY_PROGRESSIVE_TOOLS: "true",
       });
       backends.calendar = { connect: async () => {} } as unknown as Backends["calendar"];
 

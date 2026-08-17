@@ -73,6 +73,20 @@ describe("open_drawer", () => {
     expect(gate.inventory.find((g) => g.group === "mail")?.open).toBe(true);
   });
 
+  it("points at wake_betty when the gate shut before the call landed", async () => {
+    const asleep: CapabilityGate = { inventory: groups(), openGroup: () => "asleep" };
+    const { text } = harness((server) =>
+      registerOpenTool(server, { gate: asleep, disabled: new Set<string>() })
+    );
+
+    const reply = await text(OPEN_TOOL, { drawer: "mail" });
+
+    // The one thing the model must not take away is that mail is callable now.
+    expect(reply).not.toMatch(/callable now/);
+    expect(reply).toContain("wake_betty");
+    expect(reply).toContain("list_messages, send_message");
+  });
+
   it("answers an unknown name with the real list rather than an error", async () => {
     // A refusal the model can act on beats a stack trace it cannot.
     const reply = await setup(groups()).text(OPEN_TOOL, { drawer: "reminders" });

@@ -61,8 +61,15 @@ export interface ToolGroup {
   deferred: boolean;
 }
 
-/** What {@link ToolGate.openGroup} did. */
-export type OpenOutcome = "opened" | "already-open" | "unknown";
+/**
+ * What {@link ToolGate.openGroup} did.
+ *
+ * `asleep` is the one that is easy to leave out and wrong to fold into
+ * `opened`: the request is recorded, but nothing became visible, and a caller
+ * that reported success would send the model after tools its next `tools/list`
+ * would not contain.
+ */
+export type OpenOutcome = "opened" | "already-open" | "asleep" | "unknown";
 
 export interface WrapOptions {
   /**
@@ -146,12 +153,16 @@ export class ToolGate {
    *
    * Withdrawn groups are absent rather than flagged: a capability that failed to
    * authenticate should not be something a model can see, name, or offer the
-   * user. Copied on the way out — `wake_betty` renders this into its reply, and
-   * the one thing worse than a stale list is a caller mutating the live one.
+   * user. So are empty ones — a capability every one of whose tools the user put
+   * in `DISABLED_TOOLS` is, from the model's side, indistinguishable from a
+   * capability that was never configured, and naming it would advertise a drawer
+   * with nothing in it. Copied on the way out — `wake_betty` renders this into
+   * its reply, and the one thing worse than a stale list is a caller mutating
+   * the live one.
    */
   get inventory(): ToolGroup[] {
     return this.groups
-      .filter((group) => !group.withdrawn)
+      .filter((group) => !group.withdrawn && group.handles.length > 0)
       .map((group) => ({
         group: group.name,
         tools: [...group.tools],
@@ -309,22 +320,26 @@ export class ToolGate {
   /**
    * Reveal one deferred capability by name, and remember that it was wanted.
    *
-   * Refuses a withdrawn or unknown group rather than reporting a success the
-   * client's next `tools/list` would contradict — the caller turns that into
+   * Every outcome is one the client's next `tools/list` will agree with, which
+   * is the whole job: a group that is withdrawn, unknown, or holds no tools at
+   * all is refused, and a request made while Betty is asleep is recorded and
+   * reported as recorded rather than as done. The caller turns each into
    * something the model can act on.
    */
   openGroup(name: string): OpenOutcome {
     this.touch();
     const group = this.groups.find((entry) => entry.name === name);
-    if (!group || group.withdrawn) return "unknown";
+    // An empty group is a capability whose tools were all disabled by the user.
+    // It is absent from `inventory` for the same reason it is refused here:
+    // opening it would reveal nothing and say it revealed something.
+    if (!group || group.withdrawn || group.handles.length === 0) return "unknown";
     group.requested = true;
+    // Recorded, not opened. Revealing one capability while every other tool is
+    // hidden would be the wrong shape, so the next wake honours this instead.
+    if (!this.open) return "asleep";
     if (group.handles.every((handle) => handle.enabled)) return "already-open";
-    // Still asleep: record the request and let the next wake honour it, rather
-    // than revealing a capability while every other tool is hidden.
-    if (this.open) {
-      for (const handle of group.handles) handle.enabled = true;
-      this.notifier.sendToolListChanged();
-    }
+    for (const handle of group.handles) handle.enabled = true;
+    this.notifier.sendToolListChanged();
     return "opened";
   }
 

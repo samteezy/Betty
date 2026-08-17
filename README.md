@@ -431,7 +431,7 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 | `MEMORY_UNFILED` | No | Append a line to `<DESK_ROOT>/unfiled.md` when a memory is created or moved (default: `true`) |
 | `BETTY_SEED_SKILLS` | No | Install the bundled `wake-betty` and `organize-desk` skills if they aren't already there (default: `true`) |
 | `BETTY_WAKE_GATE` | No | Hide every tool behind `wake_betty` until it is called — see [The wake gate](#the-wake-gate) (default: `true`) |
-| `BETTY_PROGRESSIVE_TOOLS` | No | Keep mail, calendar, tasks, and contacts in their drawers at wake, to be opened by `open_drawer` — see [Progressive disclosure](#progressive-disclosure) (default: `true`) |
+| `BETTY_PROGRESSIVE_TOOLS` | No | Set `true` to keep mail, calendar, tasks, and contacts in their drawers at wake, to be opened by `open_drawer` — see [Progressive disclosure](#progressive-disclosure) (default: `false`) |
 | `BETTY_WAKE_REARM_MINUTES` | No | Close the gate again after this many minutes with no tool call. `0` leaves it open for the life of the process (default: `10`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
@@ -522,7 +522,7 @@ The gate requires `NOTES_BACKEND`. With no memory layer configured there is no s
 
 ### Progressive disclosure
 
-Waking does not reveal everything. Memory and skills come online — they are what waking is *for* — while mail, calendar, tasks, and contacts stay hidden behind one more step:
+Set `BETTY_PROGRESSIVE_TOOLS=true` and waking stops revealing everything. Memory and skills come online — they are what waking is *for* — while mail, calendar, tasks, and contacts stay hidden behind one more step:
 
 ```
 open_drawer — Open one of Betty's drawers to reveal the tools inside: mail,
@@ -533,9 +533,14 @@ Her desk has drawers, and mail is in one of them. The wake reply lists what's in
 
 (Drawers are capabilities, not the `desk/` folder — that one is Betty's bookkeeping, tidied by [organize-desk](#organize-desk).)
 
-This is why the awake tier costs ~1,109 tokens instead of ~2,062 on a full configuration. A conversation about the user's week never pays for mail.
+That brings the awake tier to ~1,105 tokens instead of ~2,062 on a full configuration. A conversation about the user's week never pays for mail.
 
-**Turn it off with `BETTY_PROGRESSIVE_TOOLS=false`** to have waking reveal everything at once, as it did before 0.6.0. `open_drawer` then never registers, since there would be no drawer for it to open.
+**It's off by default, and that's a deliberate trade.** Waking already does most of the work — a full configuration drops from ~2,062 schema tokens to ~104 asleep, and drawers save a further ~950 once awake. What they cost is a *second* `tools/list_changed` in the middle of a conversation. Whether that's worth it depends entirely on your client:
+
+- **Clients that fetch the new tool list synchronously** get the ~950 for the price of one extra round trip. Turn it on.
+- **Clients that defer tool schemas behind their own search index** — Claude Code, and anything else that hands the model a search tool instead of the definitions — should leave it off. That client is already withholding schemas, so the ~950 isn't saved; meanwhile its index typically refreshes on a turn boundary rather than on the notification, so the model spends a turn discovering that a tool it was just promised isn't callable yet. Worst case it concludes Betty can't read mail at all.
+
+The wake gate itself is subject to the same lag — it's one list change instead of two — which is what `BETTY_WAKE_GATE=false` is for if you'd rather have no mid-conversation churn at all.
 
 ### When a credential doesn't authenticate
 
@@ -795,15 +800,16 @@ Notes and skills register together on `NOTES_BACKEND`, so those two rows come as
 
 **Example totals:** IMAP only ~373 · Notes + Skills only ~903 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,477 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~2,062
 
-Those are the *fully open* numbers — every capability revealed at once. What a full configuration actually costs is three tiers deep:
+Those are the *fully open* numbers — every capability revealed at once. What a full configuration actually costs depends on the gate:
 
 | Tier | What the model can see | Est. tokens |
 |------|------------------------|-------------|
 | Asleep | `wake_betty` | ~104 |
-| Awake | memory, skills, `open_drawer` — and the *names* of what is in each drawer | ~1,105 |
-| Every drawer open | all 29 tools | ~2,062 |
+| Awake | all 29 tools | ~2,062 |
 
-The middle tier is where most conversations stay. Waking costs about half of what it used to, and mail schemas arrive only in the conversations that are about mail — see [Progressive disclosure](#progressive-disclosure). Both upper tiers drop back to ~104 after `BETTY_WAKE_REARM_MINUTES` of quiet.
+Most requests in a session are made asleep, so ~104 is the number that gets paid most often, and it drops back there after `BETTY_WAKE_REARM_MINUTES` of quiet.
+
+With `BETTY_PROGRESSIVE_TOOLS=true` a middle tier appears — memory, skills, `open_drawer`, and the *names* of what is in each drawer, at ~1,105 — and mail schemas arrive only in the conversations that are about mail. Whether that's a saving or a stall depends on your client; see [Progressive disclosure](#progressive-disclosure).
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

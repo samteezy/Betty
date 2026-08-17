@@ -21,6 +21,7 @@ const EMAIL_TOOLS = [
 ];
 
 const NOTES_TOOLS = ["append_note", "get_note", "replace_section", "search_notes"];
+const SKILL_TOOLS = ["list_skills", "load_skill"];
 
 /** Register against the recording stub and return the harness. */
 function setup(env: NodeJS.ProcessEnv) {
@@ -42,8 +43,9 @@ describe("email is optional", () => {
     for (const tool of EMAIL_TOOLS) {
       expect(tools.has(tool)).toBe(false);
     }
-    // ...but the configured capability is still there.
-    expect(names()).toEqual(NOTES_TOOLS);
+    // ...but the configured capability is still there — notes and skills
+    // together, since both of Betty's roots now default under betty/.
+    expect(names()).toEqual([...NOTES_TOOLS, ...SKILL_TOOLS].sort());
   });
 
   it("still defaults to jmap when only JMAP_TOKEN is set", () => {
@@ -189,13 +191,15 @@ describe("contacts gating", () => {
 });
 
 describe("notes and skills gating", () => {
-  it("omits the skill tools when SKILLS_ROOT is unset", () => {
+  it("registers the skill tools alongside notes, with no SKILLS_ROOT set", () => {
+    // Both of Betty's roots default under betty/, so NOTES_BACKEND alone is
+    // enough for memory and skills together.
     const { tools } = setup(NOTES_ONLY);
-    expect(tools.has("list_skills")).toBe(false);
-    expect(tools.has("load_skill")).toBe(false);
+    expect(tools.has("list_skills")).toBe(true);
+    expect(tools.has("load_skill")).toBe(true);
   });
 
-  it("registers the skill tools when SKILLS_ROOT is set", () => {
+  it("still honours an explicit SKILLS_ROOT", () => {
     const { tools } = setup({ ...NOTES_ONLY, SKILLS_ROOT: "skills" });
     expect(tools.has("list_skills")).toBe(true);
     expect(tools.has("load_skill")).toBe(true);
@@ -211,10 +215,62 @@ describe("notes and skills gating", () => {
     ).toThrow(/must be inside NOTES_ROOT/);
   });
 
+  it("rejects a SKILLS_ROOT outside NOTES_ROOT", () => {
+    expect(() =>
+      setup({ ...NOTES_ONLY, SKILLS_ROOT: "/Users/you/Elsewhere" })
+    ).toThrow(/must be inside NOTES_ROOT/);
+  });
+
+  it("refuses to point memory and skills at the same directory", () => {
+    expect(() =>
+      setup({ ...NOTES_ONLY, MEMORY_ROOT: "betty", SKILLS_ROOT: "betty" })
+    ).toThrow(/must be different directories/);
+  });
+
   it("requires the WebDAV triple for NOTES_BACKEND=webdav", () => {
     expect(() => setup({ NOTES_BACKEND: "webdav", NOTES_ROOT: "/Notes" })).toThrow(
       /WEBDAV_URL/
     );
+  });
+});
+
+describe("default roots", () => {
+  /**
+   * The write guard runs before the tool touches the backend, so a rejected
+   * write reports the configured scopes without any filesystem access — which
+   * is what lets this suite pin the defaults down while staying I/O-free.
+   */
+  async function refusalFor(env: NodeJS.ProcessEnv) {
+    const { call } = setup(env);
+    const result = await call("append_note", { path: "journal/today.md", content: "x" });
+    expect(result.isError).toBe(true);
+    return result.content[0].text as string;
+  }
+
+  it("defaults both of Betty's roots under betty/", async () => {
+    expect(await refusalFor(NOTES_ONLY)).toMatch(
+      /"betty\/memory\/" or "betty\/skills\/"/
+    );
+  });
+
+  it("no longer treats a bare memory/ as writable", async () => {
+    // The 0.2.x default. Anyone who relied on it must now set MEMORY_ROOT.
+    const { call } = setup(NOTES_ONLY);
+    const result = await call("append_note", { path: "memory/sam.md", content: "x" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
+  });
+
+  it("honours explicit roots over the defaults", async () => {
+    const text = await refusalFor({
+      ...NOTES_ONLY,
+      MEMORY_ROOT: "memory",
+      SKILLS_ROOT: "skills",
+    });
+
+    expect(text).toMatch(/"memory\/" or "skills\/"/);
+    expect(text).not.toMatch(/betty\//);
   });
 });
 

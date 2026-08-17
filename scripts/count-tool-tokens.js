@@ -130,7 +130,7 @@ const protocols = [
   { label: "CalDAV (tasks)", tools: taskTools, note: "" },
   { label: "CardDAV", tools: cardTools, note: "" },
   { label: "Notes / memory", tools: notesTools, note: "NOTES_BACKEND=webdav|local" },
-  { label: "Skills", tools: skillsTools, note: "requires SKILLS_ROOT" },
+  { label: "Skills", tools: skillsTools, note: "NOTES_BACKEND=webdav|local" },
 ];
 
 for (const proto of protocols) {

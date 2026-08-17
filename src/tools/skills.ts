@@ -15,7 +15,11 @@ import { NoteNotFoundError } from "../notes/errors.js";
  */
 
 export interface SkillsToolConfig {
-  /** Skills directory, relative to the notes root. Read-only. */
+  /**
+   * Skills directory, relative to the notes root. These two tools only read;
+   * writing a skill goes through `append_note` / `replace_section`, which take
+   * the same prefix as part of their write scope.
+   */
   skillsPrefix: string;
   /** Cap on skill folders enumerated. Default 200. */
   maxSkills?: number;

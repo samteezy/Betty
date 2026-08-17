@@ -6,6 +6,7 @@ import { withEnv } from "../test-support/env";
 const CONFIG: NotesToolConfig = {
   notesRoot: "/notes",
   memoryPrefix: "memory",
+  skillsPrefix: "skills",
   writeLog: false,
   now: () => new Date("2026-08-17T10:00:00.000Z"),
 };
@@ -70,12 +71,36 @@ describe("registration", () => {
 });
 
 describe("write scope guard", () => {
-  it("rejects append_note outside the memory root", async () => {
+  it("rejects append_note outside Betty's own roots", async () => {
     const { call, backend } = setup();
     const result = await call("append_note", { path: "journal/today.md", content: "x" });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/Refusing to write outside the memory root/);
+    expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
+    expect(backend.files.size).toBe(0);
+  });
+
+  it("allows append_note inside the skills root", async () => {
+    const { json, backend } = setup();
+    const result = await json("append_note", {
+      path: "skills/inbox-triage/SKILL.md",
+      content: "1. Sort the inbox.",
+      description: "Triage the inbox into reply-now and archive.",
+    });
+
+    expect(result.created).toBe(true);
+    expect(backend.files.has("skills/inbox-triage/SKILL.md")).toBe(true);
+  });
+
+  it("rejects a write to the skills root when skills are not configured", async () => {
+    const { call, backend } = setup({ skillsPrefix: undefined });
+    const result = await call("append_note", {
+      path: "skills/inbox-triage/SKILL.md",
+      content: "x",
+      description: "y",
+    });
+
+    expect(result.isError).toBe(true);
     expect(backend.files.size).toBe(0);
   });
 
@@ -93,13 +118,13 @@ describe("write scope guard", () => {
     expect(backend.files.get("journal/today.md")).toContain("old");
   });
 
-  it("rejects a traversal that lands outside the memory root", async () => {
+  it("rejects a traversal that lands outside Betty's own roots", async () => {
     // Normalizes to "journal/x.md" — the guard runs after normalization.
     const { call } = setup();
     const result = await call("append_note", { path: "memory/../journal/x.md", content: "x" });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/Refusing to write outside the memory root/);
+    expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
   });
 
   it("rejects a traversal that escapes the notes root entirely", async () => {
@@ -266,6 +291,124 @@ describe("append_note", () => {
     expect(result.content[0].text).toMatch(/changed since Betty last read it/);
     expect(backend.files.get("memory/sam.md")).toContain("Edited by a human.");
     expect(backend.files.get("memory/sam.md")).not.toContain("Betty's line.");
+  });
+});
+
+describe("append_note writing a SKILL.md", () => {
+  const SKILL_PATH = "skills/inbox-triage/SKILL.md";
+
+  async function writeSkill(overrides: Record<string, unknown> = {}) {
+    const h = setup();
+    const result = await h.call("append_note", {
+      path: SKILL_PATH,
+      content: "1. `list_messages` for the last 24 hours.",
+      description: "Sort the inbox into reply-now and archive.",
+      ...overrides,
+    });
+    return { ...h, result };
+  }
+
+  it("writes name/description frontmatter, not an OKF title block", async () => {
+    // The whole point: list_skills reads `name` and `description`, and skips a
+    // folder whose SKILL.md has neither. An OKF block here loads as a note and
+    // fails as a skill.
+    const { backend } = await writeSkill();
+    const text = backend.files.get(SKILL_PATH)!;
+
+    expect(text).toContain("name: inbox-triage");
+    expect(text).toContain("description: Sort the inbox into reply-now and archive.");
+    expect(text).not.toContain("title:");
+    expect(text).not.toContain("type: note");
+  });
+
+  it("leads with name, then description", async () => {
+    const { backend } = await writeSkill();
+    const text = backend.files.get(SKILL_PATH)!;
+
+    expect(text.indexOf("name:")).toBeLessThan(text.indexOf("description:"));
+  });
+
+  it("still stamps source and timestamp so Betty's skills stay greppable", async () => {
+    const { backend } = await writeSkill();
+    const text = backend.files.get(SKILL_PATH)!;
+
+    expect(text).toContain("source: betty");
+    expect(text).toContain("timestamp: 2026-08-17T10:00:00Z");
+  });
+
+  it("takes the skill name from the folder, not the filename", async () => {
+    const { backend } = await writeSkill();
+
+    // Naming it from the file would call every skill "SKILL".
+    expect(backend.files.get(SKILL_PATH)).not.toContain("name: SKILL");
+  });
+
+  it("lets title override the derived name", async () => {
+    const { backend } = await writeSkill({ title: "inbox-zero" });
+
+    expect(backend.files.get(SKILL_PATH)).toContain("name: inbox-zero");
+  });
+
+  it("refuses to create a SKILL.md with no description", async () => {
+    const { result, backend } = await writeSkill({ description: undefined });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/needs a description/);
+    expect(backend.files.has(SKILL_PATH)).toBe(false);
+  });
+
+  it.each([
+    ["at the root of the skills directory", "skills/SKILL.md"],
+    ["nested deeper than list_skills looks", "skills/team/triage/SKILL.md"],
+  ])("refuses a SKILL.md %s", async (_label, path) => {
+    const { call, backend } = setup();
+    const result = await call("append_note", { path, content: "x", description: "y" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/needs its own folder/);
+    expect(backend.files.size).toBe(0);
+  });
+
+  it("writes an ordinary OKF note for a non-SKILL file under skills", async () => {
+    // Only the manifest is special — supporting notes alongside it are notes.
+    const { json, backend } = setup();
+    await json("append_note", { path: "skills/inbox-triage/examples.md", content: "x" });
+
+    expect(backend.files.get("skills/inbox-triage/examples.md")).toContain("type: note");
+  });
+
+  it("appends to an existing SKILL.md without rewriting its frontmatter", async () => {
+    const { json, backend } = setup();
+    backend.seed(
+      SKILL_PATH,
+      "---\nname: inbox-triage\ndescription: Hand-written.\n---\n\n# Inbox triage\n\n1. First.\n"
+    );
+
+    await json("append_note", { path: SKILL_PATH, content: "2. Second." });
+    const text = backend.files.get(SKILL_PATH)!;
+
+    expect(text).toContain("description: Hand-written.");
+    expect(text).toContain("1. First.");
+    expect(text).toContain("2. Second.");
+    expect(text).not.toContain("source: betty");
+  });
+
+  it("replaces a section in an existing skill", async () => {
+    const { json, backend } = setup();
+    backend.seed(
+      SKILL_PATH,
+      "---\nname: inbox-triage\ndescription: d\n---\n\n# Inbox triage\n\n## Steps\n\nold\n"
+    );
+
+    const result = await json("replace_section", {
+      path: SKILL_PATH,
+      heading: "Steps",
+      content: "new",
+    });
+
+    expect(result.replaced).toBe(true);
+    expect(backend.files.get(SKILL_PATH)).toContain("new");
+    expect(backend.files.get(SKILL_PATH)).not.toContain("old");
   });
 });
 

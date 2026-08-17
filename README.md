@@ -18,6 +18,27 @@ Point Betty at a Fastmail Files folder or a local directory and she remembers wh
 
 Betty's memory is a folder of markdown files. No database, no embedding index, no proprietary store — the entire mechanism is files you can open, grep, edit, and delete.
 
+### Where it lives, and what it isn't
+
+Memory is not the same thing as your notes. `NOTES_ROOT` is everything Betty can **read** — point it at your whole vault if you like. Inside it, `betty/` is the only part she owns:
+
+```
+Notes/                          ← NOTES_ROOT — all of it readable
+  projects/                     ← yours
+  daily/                        ← yours
+  betty/
+    memory/                     ← MEMORY_ROOT — writable
+      index.md
+      log.md
+      people/priya-raman.md
+    skills/                     ← SKILLS_ROOT — writable
+      inbox-triage/SKILL.md
+```
+
+Memory is a strict subset of your notes, and everything Betty writes lands in one folder you can inspect, back up, or delete wholesale.
+
+That containment has a consequence worth stating plainly: **an index Betty maintains is an index of memories, not of your notes.** She can only write inside `betty/`, so the `index.md` she curates covers what she has learned and written down — the people, projects, and preferences in `memory/`. Your own notes stay uncatalogued unless you index them yourself. Betty *searches* the whole vault; she only *catalogues* her own corner of it.
+
 ### Recall
 
 `search_notes` works outward from the strongest signal. It reads the markdown links inside any `index.md` you've curated, then matches filenames straight off the directory listing — neither of which costs a file read. Pass `content: true` to also read bodies and frontmatter (one read per file, capped at 100). Every result carries `matchedOn` — `index`, `frontmatter`, `path`, or `body` — and results are ranked in that order, so the model can tell a curated hit from a coincidental filename match. `get_note` then reads the one that looked right, returning the body plus the list of headings available to `replace_section`.
@@ -26,12 +47,14 @@ When a search hits its bounds it says so — `truncated: true` with a reason —
 
 ### Storing
 
-Two tools, both confined to `MEMORY_ROOT`:
+Two tools, both confined to `MEMORY_ROOT` and `SKILLS_ROOT`:
 
 - **`append_note`** adds content to a note, creating it with OKF frontmatter if it doesn't exist. Pass `heading` to append under an existing section instead of at the end of the file.
 - **`replace_section`** rewrites the content under a heading that already exists, leaving the rest of the file untouched. If the heading doesn't exist, the error lists the ones that do, so the model can retry instead of guessing.
 
 That is the entire write surface — see [read-wide, write-narrow](#read-wide-write-narrow) for why there is nothing else.
+
+A write anywhere outside those two directories is refused before it reaches storage, and the refusal names both roots so the model can retarget rather than give up.
 
 ### What a memory file looks like
 
@@ -70,13 +93,16 @@ Frontmatter keys are written in a fixed order — the four required ones, then t
 
 A hit here outranks every other kind. One curated index turns a folder Betty has to scan into one she can navigate.
 
+Search reads **every** `index.md` under `NOTES_ROOT`, including ones you wrote for your own notes — but the only one Betty can add to is `<MEMORY_ROOT>/index.md`. So her index grows with her memories, and yours stays yours. If you want your wider vault indexed, write that index yourself; she'll read it and rank hits from it just as highly.
+
 ### log.md — what she changed
 
 Every write appends a line to `<MEMORY_ROOT>/log.md`:
 
 ```markdown
-- 2026-08-17T14:22:09Z `create` [memory/people/priya-raman.md](memory/people/priya-raman.md)
-- 2026-08-17T14:31:44Z `append` [memory/projects/betty.md](memory/projects/betty.md) — Open questions
+- 2026-08-17T14:22:09Z `create` [betty/memory/people/priya-raman.md](betty/memory/people/priya-raman.md)
+- 2026-08-17T14:31:44Z `append` [betty/memory/projects/betty.md](betty/memory/projects/betty.md) — Open questions
+- 2026-08-17T15:02:11Z `create` [betty/skills/inbox-triage/SKILL.md](betty/skills/inbox-triage/SKILL.md)
 ```
 
 A chronological record of what Betty did to your notes, kept in the notes themselves. Set `MEMORY_LOG=false` to turn it off. Logging is deliberately best-effort: the note write has already succeeded by that point, so a logging failure comes back as a `warning` on a successful write rather than as a failed one.
@@ -87,7 +113,7 @@ Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely,
 
 Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both. A line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — is usually all it takes:
 
-> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_note` it under `memory/`.
+> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_note` it under `betty/memory/`.
 
 Better still, point that instruction at a skill (`list_skills`, then `load_skill`) so the substance lives in your storage and travels between platforms, leaving the client-side config a one-liner.
 
@@ -96,7 +122,7 @@ Better still, point that instruction at a skill (`list_skills`, then `load_skill
 A skill is a folder containing a `SKILL.md`: frontmatter with `name` and `description`, then markdown instructions. It's the standard format, and unknown frontmatter keys are ignored rather than rejected, so skills written for other tools generally load unchanged.
 
 ```
-skills/
+betty/skills/
   inbox-triage/
     SKILL.md
   weekly-review/
@@ -115,7 +141,7 @@ description: Sort the inbox into reply-now, waiting-on, and archive. Use when as
 
 1. `list_messages` for the last 24 hours.
 2. Group into **reply now**, **waiting on someone**, and **archive**.
-3. For anything from a name in `memory/people/`, `get_note` it first — reply in the register that note describes.
+3. For anything from a name in `betty/memory/people/`, `get_note` it first — reply in the register that note describes.
 4. Draft nothing without showing me the grouped list.
 ```
 
@@ -124,6 +150,25 @@ The `description` is the part that earns its keep. `list_skills` returns only na
 Both `name` and `description` are required. A folder whose `SKILL.md` is missing either one is skipped and counted in `skippedFolders` — pass `verbose: true` to `list_skills` to see which and why. A folder with no `SKILL.md` at all simply isn't a skill, and isn't reported as a problem.
 
 Because skills live in your storage rather than in a platform's account settings, they travel with you: point Betty at the same folder from a different agent host and she arrives already knowing how you work.
+
+### Betty can write skills too
+
+`SKILLS_ROOT` is inside the write scope alongside `MEMORY_ROOT`, so a skill can be dictated rather than hand-written — "you worked that out well, save it as a skill" is a thing you can say. It goes through the same two tools as memory, with the same limits: `append_note` to create or extend, `replace_section` to rewrite a section, and no way to overwrite a file wholesale.
+
+Creating a `SKILL.md` is the one case where `append_note` writes something other than OKF frontmatter, because a skill manifest isn't a note — `list_skills` reads `name` and `description`, and a folder with neither is skipped:
+
+```markdown
+---
+name: inbox-triage
+description: Sort the inbox into reply-now, waiting-on, and archive.
+source: betty
+timestamp: 2026-08-17T14:22:09Z
+---
+```
+
+The `name` comes from the folder, so `betty/skills/inbox-triage/SKILL.md` is the `inbox-triage` skill. Two things are refused rather than written, both because the result would look saved and never load: a `SKILL.md` without a `description`, and one that isn't exactly one level under the skills root — which is as deep as `list_skills` looks.
+
+Skill writing rides on the same two tools as memory writing, so there is no switch for one without the other: `DISABLED_TOOLS=append_note,replace_section` makes Betty read-only everywhere, and there is no setting that leaves memory writable while freezing skills.
 
 **Skills are instructions, not code.** Betty reads the markdown. She does not read, resolve paths into, or execute anything from a skill's `scripts/` directory — a skill loaded off file storage is untrusted input, and the only safe thing to do with it is read it as text.
 
@@ -163,7 +208,6 @@ claude mcp add betty \
   -e WEBDAV_USERNAME=you@fastmail.com \
   -e WEBDAV_PASSWORD=your-files-app-password \
   -e NOTES_ROOT=/you@fastmail.com/Notes \
-  -e SKILLS_ROOT=/you@fastmail.com/Notes/skills \
   -- npx betty-mcp
 ```
 
@@ -180,8 +224,7 @@ Or, for Claude Desktop, in `claude_desktop_config.json`:
         "WEBDAV_URL": "https://myfiles.fastmail.com",
         "WEBDAV_USERNAME": "you@fastmail.com",
         "WEBDAV_PASSWORD": "your-files-app-password",
-        "NOTES_ROOT": "/you@fastmail.com/Notes",
-        "SKILLS_ROOT": "/you@fastmail.com/Notes/skills"
+        "NOTES_ROOT": "/you@fastmail.com/Notes"
       }
     }
   }
@@ -190,7 +233,7 @@ Or, for Claude Desktop, in `claude_desktop_config.json`:
 
 Create the Files app password under Fastmail **Settings > Privacy & Security > App passwords**, scoped to **Files (WebDAV)**. It is a different credential from the JMAP API token used for email — you don't need that one here.
 
-`NOTES_ROOT` must already exist on the server; `memory/` and `skills/` are created on first write.
+`NOTES_ROOT` must already exist on the server. `betty/memory/` and `betty/skills/` beneath it are the defaults and are created on first write — set `MEMORY_ROOT` or `SKILLS_ROOT` only if you want them somewhere else.
 
 ### Prefer a local folder?
 
@@ -204,8 +247,7 @@ Swap the WebDAV variables for a path and nothing else changes — no credentials
       "args": ["betty-mcp"],
       "env": {
         "NOTES_BACKEND": "local",
-        "NOTES_ROOT": "/Users/you/Notes",
-        "SKILLS_ROOT": "/Users/you/Notes/skills"
+        "NOTES_ROOT": "/Users/you/Notes"
       }
     }
   }
@@ -220,7 +262,7 @@ From there, add email with `JMAP_TOKEN` (or the `IMAP_*` set), calendars with `C
 
 The server is configured entirely through environment variables.
 
-Every capability is opt-in and activates on its own trigger variable — email on `EMAIL_BACKEND` (or a credential), calendar and tasks on `CALDAV_URL`, contacts on `CARDDAV_URL`, notes and memory on `NOTES_BACKEND`, skills on `SKILLS_ROOT`. Configure one or all of them. If *nothing* is configured the server refuses to start rather than presenting an empty toolbox.
+Every capability is opt-in and activates on its own trigger variable — email on `EMAIL_BACKEND` (or a credential), calendar and tasks on `CALDAV_URL`, contacts on `CARDDAV_URL`, notes, memory, and skills together on `NOTES_BACKEND`. Configure one or all of them. If *nothing* is configured the server refuses to start rather than presenting an empty toolbox.
 
 ### Backend selection
 
@@ -303,18 +345,22 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 |----------|----------|-------------|
 | `NOTES_BACKEND` | Yes | `"webdav"` or `"local"`. Enables notes, memory, and skills. |
 | `NOTES_ROOT` | Yes | Read scope. A directory path (local) or a path on the WebDAV server. |
-| `MEMORY_ROOT` | No | Write scope — must be inside `NOTES_ROOT` (default: `<NOTES_ROOT>/memory`) |
-| `SKILLS_ROOT` | No | Skills directory, inside `NOTES_ROOT`. Skill tools are only registered when this is set. |
+| `MEMORY_ROOT` | No | Write scope for memory — must be inside `NOTES_ROOT` (default: `<NOTES_ROOT>/betty/memory`) |
+| `SKILLS_ROOT` | No | Skills directory, also writable — must be inside `NOTES_ROOT`, and different from `MEMORY_ROOT` (default: `<NOTES_ROOT>/betty/skills`) |
 | `MEMORY_LOG` | No | Append a change-history line to `<MEMORY_ROOT>/log.md` (default: `true`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
 | `WEBDAV_PASSWORD` | When `NOTES_BACKEND=webdav` | HTTP Basic auth password |
 
-`MEMORY_ROOT` and `SKILLS_ROOT` accept either a full path (`/Notes/memory`) or a path relative to `NOTES_ROOT` (`memory`). Either way, the server refuses to start if they fall outside `NOTES_ROOT`.
+`MEMORY_ROOT` and `SKILLS_ROOT` accept either a full path (`/Notes/betty/memory`) or a path relative to `NOTES_ROOT` (`betty/memory`). Either way, the server refuses to start if they fall outside `NOTES_ROOT`, or if both resolve to the same directory.
+
+Both default under `betty/` so that everything Betty owns sits in one folder inside your notes rather than scattered among them. Neither needs setting: `NOTES_BACKEND` and `NOTES_ROOT` are enough to get memory and skills together.
+
+> **Upgrading from 0.2.x?** `MEMORY_ROOT` used to default to `<NOTES_ROOT>/memory`, and skills only loaded when `SKILLS_ROOT` was set explicitly. If you relied on either default, Betty now looks in `betty/memory` and `betty/skills` instead. Either move those two directories under a new `betty/` folder, or pin the old layout by setting `MEMORY_ROOT=memory` and `SKILLS_ROOT=skills`. Configs that already set both paths explicitly are unaffected.
 
 #### Read-wide, write-narrow
 
-Betty can **read** anything under `NOTES_ROOT` — your whole vault, if you point her at it. She can only **write** under `MEMORY_ROOT`. That boundary is enforced in code, before any request reaches storage, not merely described in a tool description the model is free to ignore.
+Betty can **read** anything under `NOTES_ROOT` — your whole vault, if you point her at it. She can only **write** under `MEMORY_ROOT` and `SKILLS_ROOT`. That boundary is enforced in code, before any request reaches storage, not merely described in a tool description the model is free to ignore.
 
 There is deliberately **no whole-file write or overwrite tool**. Betty can create a note, append to one, and replace the content under a heading that already exists. She cannot replace a file wholesale, so the worst case for a note you wrote by hand is an unwanted paragraph at the end, not a vanished document.
 
@@ -330,8 +376,9 @@ WEBDAV_URL=https://myfiles.fastmail.com
 WEBDAV_USERNAME=you@fastmail.com
 WEBDAV_PASSWORD=your-files-app-password
 NOTES_ROOT=/you@fastmail.com/Notes
-MEMORY_ROOT=/you@fastmail.com/Notes/memory
-SKILLS_ROOT=/you@fastmail.com/Notes/skills
+# Optional — these are the defaults:
+MEMORY_ROOT=/you@fastmail.com/Notes/betty/memory
+SKILLS_ROOT=/you@fastmail.com/Notes/betty/skills
 ```
 
 Create the password under **Settings > Privacy & Security > App passwords**, scoped to **Files**.
@@ -343,8 +390,9 @@ For a local vault — an Obsidian directory, a Syncthing folder, anything on dis
 ```bash
 NOTES_BACKEND=local
 NOTES_ROOT=/Users/you/Notes
-MEMORY_ROOT=/Users/you/Notes/memory
-SKILLS_ROOT=/Users/you/Notes/skills
+# Optional — these are the defaults:
+MEMORY_ROOT=/Users/you/Notes/betty/memory
+SKILLS_ROOT=/Users/you/Notes/betty/skills
 ```
 
 For what Betty actually does with these directories — the file format, `index.md`, `log.md`, and how skills load — see [Memory](#memory) and [Skills](#skills).
@@ -451,8 +499,8 @@ Email and contacts use JMAP (automatic), calendar uses CalDAV. To use CardDAV fo
         "WEBDAV_USERNAME": "you@fastmail.com",
         "WEBDAV_PASSWORD": "your-files-app-password",
         "NOTES_ROOT": "/you@fastmail.com/Notes",
-        "MEMORY_ROOT": "/you@fastmail.com/Notes/memory",
-        "SKILLS_ROOT": "/you@fastmail.com/Notes/skills"
+        "MEMORY_ROOT": "/you@fastmail.com/Notes/betty/memory",
+        "SKILLS_ROOT": "/you@fastmail.com/Notes/betty/skills"
       }
     }
   }
@@ -477,8 +525,7 @@ Email is opt-in, so you can leave it out entirely and still get everything else.
         "CARDDAV_USERNAME": "you@fastmail.com",
         "CARDDAV_PASSWORD": "your-carddav-app-password",
         "NOTES_BACKEND": "local",
-        "NOTES_ROOT": "/Users/you/Notes",
-        "SKILLS_ROOT": "/Users/you/Notes/skills"
+        "NOTES_ROOT": "/Users/you/Notes"
       }
     }
   }
@@ -540,7 +587,7 @@ If you have a mail credential in your environment for other reasons and want ema
 | `append_note` | Append to a note, creating it with OKF frontmatter if missing. Optionally appends under a named heading |
 | `replace_section` | Replace the content under an existing heading, leaving the rest of the file untouched |
 
-Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted to `MEMORY_ROOT`. There is no whole-file write tool. See [Memory](#memory) for how these fit together.
+Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted to `MEMORY_ROOT` and `SKILLS_ROOT`. There is no whole-file write tool. See [Memory](#memory) for how these fit together.
 
 ### Skills (WebDAV or local)
 
@@ -566,10 +613,12 @@ Tools are only registered when the matching backend is configured. Combine rows 
 | CalDAV — calendar | 4 | ~192 |
 | CalDAV — tasks | 6 | ~383 |
 | CardDAV | 4 | ~206 |
-| Notes & memory | 4 | ~403 |
+| Notes & memory | 4 | ~425 |
 | Skills | 2 | ~120 |
 
-**Example totals:** IMAP only ~373 · Notes + Skills only ~523 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,098 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,683
+Notes and skills register together on `NOTES_BACKEND`, so those two rows come as a pair unless you trim them with `DISABLED_TOOLS`.
+
+**Example totals:** IMAP only ~373 · Notes + Skills only ~545 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,120 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,705
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

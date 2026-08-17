@@ -1,7 +1,9 @@
 import {
+  SKILL_FRONTMATTER,
   appendToBody,
   appendToSection,
   buildFrontmatter,
+  buildSkillFrontmatter,
   extractLinks,
   findSection,
   listHeadings,
@@ -120,6 +122,48 @@ describe("serializeNote()", () => {
   it("serializes lists as block items", () => {
     const text = serializeNote({ tags: ["a", "b"] }, "body");
     expect(text).toContain("tags:\n  - a\n  - b");
+  });
+
+  it("takes a different leading-key order for skill manifests", () => {
+    const text = serializeNote(
+      { timestamp: "t", source: "betty", description: "D", name: "inbox-triage" },
+      "body",
+      SKILL_FRONTMATTER
+    );
+    const keys = text
+      .split("\n")
+      .slice(1)
+      .filter((l) => /^[a-z]+:/.test(l))
+      .map((l) => l.split(":")[0]);
+
+    // description is an OKF required key, so the default order would hoist it
+    // above name — a skill manifest leads with name instead.
+    expect(keys).toEqual(["name", "description", "source", "timestamp"]);
+  });
+});
+
+describe("buildSkillFrontmatter()", () => {
+  it("emits the two keys list_skills reads", () => {
+    const fm = buildSkillFrontmatter({
+      name: "inbox-triage",
+      description: "Sort the inbox.",
+      timestamp: "t",
+    });
+
+    expect(fm.name).toBe("inbox-triage");
+    expect(fm.description).toBe("Sort the inbox.");
+  });
+
+  it("writes no OKF note keys, which would make it load as a note", () => {
+    const fm = buildSkillFrontmatter({ name: "n", description: "d", timestamp: "t" });
+
+    expect(fm.type).toBeUndefined();
+    expect(fm.title).toBeUndefined();
+  });
+
+  it("still tags the file as Betty's", () => {
+    const fm = buildSkillFrontmatter({ name: "n", description: "d", timestamp: "t" });
+    expect(fm.source).toBe("betty");
   });
 });
 

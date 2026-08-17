@@ -149,27 +149,52 @@ describe("isUnderPrefix()", () => {
 });
 
 describe("assertWritable()", () => {
+  const SCOPES = ["betty/memory", "betty/skills"];
+
   it("allows a write inside the memory root", () => {
-    expect(() => assertWritable("memory", "memory/people/sam.md")).not.toThrow();
+    expect(() => assertWritable(SCOPES, "betty/memory/people/sam.md")).not.toThrow();
+  });
+
+  it("allows a write inside the skills root", () => {
+    expect(() => assertWritable(SCOPES, "betty/skills/inbox-triage/SKILL.md")).not.toThrow();
   });
 
   it("rejects a write elsewhere in the notes root", () => {
     // The interesting case: readable (inside NOTES_ROOT) but not writable.
-    expect(() => assertWritable("memory", "journal/2026-08-17.md")).toThrow(
-      /Refusing to write outside the memory root/
+    expect(() => assertWritable(SCOPES, "journal/2026-08-17.md")).toThrow(
+      /Refusing to write outside Betty's own roots/
     );
   });
 
+  it("rejects a write to the parent of both roots", () => {
+    // betty/ itself is not a write scope — only the two directories inside it.
+    expect(() => assertWritable(SCOPES, "betty/scratch.md")).toThrow(NoteScopeError);
+  });
+
   it("rejects a write to a name-prefixed sibling directory", () => {
-    expect(() => assertWritable("memory", "memory-old/sam.md")).toThrow(NoteScopeError);
+    expect(() => assertWritable(SCOPES, "betty/memory-old/sam.md")).toThrow(NoteScopeError);
   });
 
-  it("rejects a write to the skills directory", () => {
-    expect(() => assertWritable("memory", "skills/research/SKILL.md")).toThrow(NoteScopeError);
+  it("rejects a write to the skills root when skills are not in scope", () => {
+    expect(() => assertWritable(["betty/memory"], "betty/skills/research/SKILL.md")).toThrow(
+      NoteScopeError
+    );
   });
 
-  it("mentions MEMORY_ROOT so the user knows what to change", () => {
-    expect(() => assertWritable("memory", "elsewhere.md")).toThrow(/MEMORY_ROOT/);
+  it("names both roots in the error so the model can retarget", () => {
+    expect(() => assertWritable(SCOPES, "elsewhere.md")).toThrow(
+      /"betty\/memory\/" or "betty\/skills\/"/
+    );
+  });
+
+  it("mentions the variables so the user knows what to change", () => {
+    expect(() => assertWritable(SCOPES, "elsewhere.md")).toThrow(/MEMORY_ROOT or SKILLS_ROOT/);
+  });
+
+  it("refuses everything when no prefix is in scope", () => {
+    // An empty prefix means "unrestricted" to isUnderPrefix — never to a write.
+    expect(() => assertWritable([""], "anything.md")).toThrow(/no writable root is configured/);
+    expect(() => assertWritable([], "anything.md")).toThrow(/no writable root is configured/);
   });
 });
 

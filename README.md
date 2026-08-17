@@ -70,8 +70,8 @@ npm install -g betty-mcp
 For local development:
 
 ```bash
-git clone https://github.com/samteezy/betty-mcp.git
-cd betty-mcp
+git clone https://github.com/samteezy/Betty.git
+cd Betty
 npm install
 npm run build
 ```

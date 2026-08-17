@@ -27,34 +27,47 @@ Notes/                          ← NOTES_ROOT — all of it readable
   projects/                     ← yours
   daily/                        ← yours
   betty/
-    memory/                     ← MEMORY_ROOT — writable
+    memory/                     ← MEMORY_ROOT — writable, searched
       index.md
-      log.md
       people/priya-raman.md
+    desk/                       ← DESK_ROOT — writable, never searched
+      unfiled.md
+      backlog.md
+      log.md
+    trash/                      ← TRASH_ROOT — writable, never searched
     skills/                     ← SKILLS_ROOT — writable
-      inbox-triage/SKILL.md
+      wake-betty/SKILL.md         ← shipped
+      organize-desk/SKILL.md      ← shipped
+      meeting-prep/SKILL.md       ← yours
 ```
 
 Memory is a strict subset of your notes, and everything Betty writes lands in one folder you can inspect, back up, or delete wholesale.
+
+Three of those four are memory in the ordinary sense. The fourth, `desk/`, is bookkeeping — a queue, a backlog, a change log — and it is deliberately **excluded from search**. Betty's paperwork should not compete with what she actually knows when you ask her a question. `trash/` is excluded for the same reason: retired means gone from recall, not deleted.
 
 That containment has a consequence worth stating plainly: **an index Betty maintains is an index of memories, not of your notes.** She can only write inside `betty/`, so the `index.md` she curates covers what she has learned and written down — the people, projects, and preferences in `memory/`. Your own notes stay uncatalogued unless you index them yourself. Betty *searches* the whole vault; she only *catalogues* her own corner of it.
 
 ### Recall
 
-`search_notes` works outward from the strongest signal. It reads the markdown links inside any `index.md` you've curated, then matches filenames straight off the directory listing — neither of which costs a file read. Pass `content: true` to also read bodies and frontmatter (one read per file, capped at 100). Every result carries `matchedOn` — `index`, `frontmatter`, `path`, or `body` — and results are ranked in that order, so the model can tell a curated hit from a coincidental filename match. `get_note` then reads the one that looked right, returning the body plus the list of headings available to `replace_section`.
+`search_notes` works outward from the strongest signal. It reads the markdown links inside any `index.md` you've curated, then matches filenames straight off the directory listing — neither of which costs a file read. Pass `content: true` to also read bodies and frontmatter (one read per file, capped at 100). Every result carries `matchedOn` — `index`, `frontmatter`, `path`, or `body` — and results are ranked in that order, so the model can tell a curated hit from a coincidental filename match. `get_note` then reads the one that looked right, returning the body plus the list of headings available to `replace_memory_section`.
+
+`desk/` and `trash/` are skipped. Pass `dir` pointing into either one to search it deliberately — so nothing is unreachable, it just isn't in the way.
 
 When a search hits its bounds it says so — `truncated: true` with a reason — rather than returning a short list that looks complete.
 
 ### Storing
 
-Two tools, both confined to `MEMORY_ROOT` and `SKILLS_ROOT`:
+Three tools, all confined to `MEMORY_ROOT`, `DESK_ROOT`, and `TRASH_ROOT`:
 
-- **`append_note`** adds content to a note, creating it with OKF frontmatter if it doesn't exist. Pass `heading` to append under an existing section instead of at the end of the file.
-- **`replace_section`** rewrites the content under a heading that already exists, leaving the rest of the file untouched. If the heading doesn't exist, the error lists the ones that do, so the model can retry instead of guessing.
+- **`append_memory`** adds content to a memory, creating it with OKF frontmatter if it doesn't exist. Pass `heading` to append under an existing section instead of at the end of the file.
+- **`replace_memory_section`** rewrites the content under a heading that already exists, leaving the rest of the file untouched. If the heading doesn't exist, the error lists the ones that do, so the model can retry instead of guessing.
+- **`move_memory`** moves or renames a memory. It refuses to overwrite, so the destination must not already exist.
 
-That is the entire write surface — see [read-wide, write-narrow](#read-wide-write-narrow) for why there is nothing else.
+Skills have their own two tools — see [Betty can write skills too](#betty-can-write-skills-too). A memory tool cannot write a skill and a skill tool cannot write a memory, which is what keeps `DISABLED_TOOLS` able to freeze one without the other.
 
-A write anywhere outside those two directories is refused before it reaches storage, and the refusal names both roots so the model can retarget rather than give up.
+That is the entire write surface — see [read-wide, write-narrow](#read-wide-write-narrow) for why there is nothing else. In particular there is **no delete**. Retiring a memory means `move_memory` into `trash/`, where it stops appearing in searches but stays readable by path. Nothing Betty wrote is ever destroyed.
+
+A write anywhere outside those directories is refused before it reaches storage, and the refusal names the roots so the model can retarget rather than give up.
 
 ### What a memory file looks like
 
@@ -93,29 +106,78 @@ Frontmatter keys are written in a fixed order — the four required ones, then t
 
 A hit here outranks every other kind. One curated index turns a folder Betty has to scan into one she can navigate.
 
-Search reads **every** `index.md` under `NOTES_ROOT`, including ones you wrote for your own notes — but the only one Betty can add to is `<MEMORY_ROOT>/index.md`. So her index grows with her memories, and yours stays yours. If you want your wider vault indexed, write that index yourself; she'll read it and rank hits from it just as highly.
+**Nothing in Betty's code ever writes an index**, and that is what keeps the ranking honest. A top-ranked index hit always means something was filed on purpose — by you, or by the [organize-desk skill](#the-desk) on its periodic pass. If code appended a line here every time a memory was created, the index would be a running list of raw entries wearing the authority of a curated one.
 
-### log.md — what she changed
+Search reads **every** `index.md` under `NOTES_ROOT`, including ones you wrote for your own notes. If you want your wider vault indexed, write that index yourself; Betty will read it and rank hits from it just as highly.
 
-Every write appends a line to `<MEMORY_ROOT>/log.md`:
+### The desk
+
+`betty/desk/` is where Betty keeps her working papers. None of it is searched.
+
+| File | What it is | Who writes it |
+|------|------------|---------------|
+| `unfiled.md` | Memories not yet in the index, under an `## Unprocessed` heading | Betty, automatically |
+| `backlog.md` | Things to raise with you next time | the organize-desk skill |
+| `log.md` | Append-only change history | Betty, automatically |
+
+**`unfiled.md`** gets a line each time a memory is created or moved:
+
+```markdown
+## Unprocessed
+
+- 2026-08-17T14:22:09Z `create` [betty/memory/people/priya-raman.md](…) — Priya Raman
+- 2026-08-17T14:31:44Z `move` [betty/memory/projects/betty.md](…) — moved from betty/memory/betty.md
+```
+
+That is the whole automatic half of the system. Deciding what those entries *mean* — whether a memory needs merging, re-filing, retiring, or raising with you, and where it belongs in the index — is the [organize-desk skill's](#organize-desk) job, and it runs when you or your schedule tell it to.
+
+**`log.md`** is the permanent record, distinct from `unfiled.md` because that list gets drained and the log never does:
 
 ```markdown
 - 2026-08-17T14:22:09Z `create` [betty/memory/people/priya-raman.md](betty/memory/people/priya-raman.md)
 - 2026-08-17T14:31:44Z `append` [betty/memory/projects/betty.md](betty/memory/projects/betty.md) — Open questions
-- 2026-08-17T15:02:11Z `create` [betty/skills/inbox-triage/SKILL.md](betty/skills/inbox-triage/SKILL.md)
+- 2026-08-17T15:02:11Z `move` [betty/trash/old-note.md](betty/trash/old-note.md) — from betty/memory/old-note.md
 ```
 
-A chronological record of what Betty did to your notes, kept in the notes themselves. Set `MEMORY_LOG=false` to turn it off. Logging is deliberately best-effort: the note write has already succeeded by that point, so a logging failure comes back as a `warning` on a successful write rather than as a failed one.
+Set `MEMORY_LOG=false` or `MEMORY_UNFILED=false` to turn either off. Both are deliberately best-effort: the memory write has already succeeded by that point, so a failure comes back as a `warning` on a successful write rather than as a failed one.
 
-Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely, and memory you can't see isn't memory you can trust.
+Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely, and memory you can't see isn't memory you can trust — which is also why trash is a visible folder rather than a delete.
 
 ### Telling Betty when to remember
 
 Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both. A line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — is usually all it takes:
 
-> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_note` it under `betty/memory/`.
+> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_memory` it under `betty/memory/`.
 
-Better still, point that instruction at a skill (`list_skills`, then `load_skill`) so the substance lives in your storage and travels between platforms, leaving the client-side config a one-liner.
+Better still, point it at the [wake-betty](#wake-betty--the-default) skill Betty ships with, so the substance lives in your storage and travels between platforms, leaving the client-side config a one-liner:
+
+> If I mention Betty, `load_skill` **wake-betty** first.
+
+### The two skills Betty ships with
+
+Both are installed the first time she connects, and never touched again.
+
+#### wake-betty — the default
+
+This is what your one-line client rule should point at:
+
+> If I mention Betty, `load_skill` **wake-betty** first.
+
+It tells the model who Betty is, that the first move is to *search before answering*, where memory lives, what is worth recording, and — importantly — what she refuses to do, so it expects the refusal instead of working around it. Keeping it in a skill rather than in your client config is the whole point: the substance lives in your storage and travels with you, and the config stays a single line on every platform.
+
+#### organize-desk — the maintenance pass
+
+The other half of the memory system: the tools capture, and this decides what the captures mean.
+
+A pass over the desk drains `unfiled.md` — for each entry, merge it into an existing memory, re-file it, retire it into `trash/`, or add it to `backlog.md` to raise with you — then rebuilds `index.md` so every memory sits under a category heading, and finishes by reporting what's in the backlog.
+
+It is written to be run on a schedule. Point your client's daily or weekly job at it:
+
+> `load_skill` organize-desk and follow it.
+
+If it never runs, nothing breaks — memories still get written and searched. You simply get no index and no triage, which is exactly where Betty was before it existed.
+
+**Both files are seeded once and never revised**, so any edits you make survive upgrades — Betty never rewrites a skill she has handed over. Delete one and it comes back on the next start; set `BETTY_SEED_SKILLS=false` if you'd rather it didn't.
 
 ## Skills
 
@@ -123,7 +185,7 @@ A skill is a folder containing a `SKILL.md`: frontmatter with `name` and `descri
 
 ```
 betty/skills/
-  inbox-triage/
+  meeting-prep/
     SKILL.md
   weekly-review/
     SKILL.md
@@ -133,16 +195,16 @@ One level deep, a folder per skill. The `SKILL.md` itself is just instructions y
 
 ```markdown
 ---
-name: inbox-triage
-description: Sort the inbox into reply-now, waiting-on, and archive. Use when asked to triage, clear, or catch up on email.
+name: meeting-prep
+description: Brief me before a meeting — who is coming, what we agreed last time, what is still open. Use when I ask to prep for or get ready for a meeting.
 ---
 
-# Inbox triage
+# Meeting prep
 
-1. `list_messages` for the last 24 hours.
-2. Group into **reply now**, **waiting on someone**, and **archive**.
-3. For anything from a name in `betty/memory/people/`, `get_note` it first — reply in the register that note describes.
-4. Draft nothing without showing me the grouped list.
+1. `list_events` for the next 24 hours.
+2. For each attendee, `search_notes` their name, then `get_note` anything under `betty/memory/people/`.
+3. Check `betty/desk/backlog.md` for anything I owe them.
+4. One short paragraph per meeting: who, what we agreed last time, what is open. Nothing else.
 ```
 
 The `description` is the part that earns its keep. `list_skills` returns only names and descriptions, so the description is all the model has when deciding whether a skill is worth loading — write it to say *when to use this*, not merely what it is. `load_skill` then returns the full instructions, matched on the skill's `name` or its folder name, case-insensitively.
@@ -153,22 +215,24 @@ Because skills live in your storage rather than in a platform's account settings
 
 ### Betty can write skills too
 
-`SKILLS_ROOT` is inside the write scope alongside `MEMORY_ROOT`, so a skill can be dictated rather than hand-written — "you worked that out well, save it as a skill" is a thing you can say. It goes through the same two tools as memory, with the same limits: `append_note` to create or extend, `replace_section` to rewrite a section, and no way to overwrite a file wholesale.
+A skill can be dictated rather than hand-written — "you worked that out well, save it as a skill" is a thing you can say. Two tools, scoped to `SKILLS_ROOT` and nothing else: `append_skill` to create or extend, `replace_skill_section` to rewrite a section, and no way to overwrite a file wholesale.
 
-Creating a `SKILL.md` is the one case where `append_note` writes something other than OKF frontmatter, because a skill manifest isn't a note — `list_skills` reads `name` and `description`, and a folder with neither is skipped:
+Both take a **skill name**, not a path — `append_skill({ name: "meeting-prep", … })` writes `<SKILLS_ROOT>/meeting-prep/SKILL.md`. `list_skills` only looks exactly one level below the skills root, so a `SKILL.md` written any deeper, or at the root itself, would look saved and never load. A name can't express either mistake.
+
+The frontmatter is a skill manifest rather than OKF, because a skill isn't a note — `list_skills` reads `name` and `description`, and a folder with neither is skipped:
 
 ```markdown
 ---
-name: inbox-triage
-description: Sort the inbox into reply-now, waiting-on, and archive.
+name: meeting-prep
+description: Brief me before a meeting — who is coming and what is still open.
 source: betty
 timestamp: 2026-08-17T14:22:09Z
 ---
 ```
 
-The `name` comes from the folder, so `betty/skills/inbox-triage/SKILL.md` is the `inbox-triage` skill. Two things are refused rather than written, both because the result would look saved and never load: a `SKILL.md` without a `description`, and one that isn't exactly one level under the skills root — which is as deep as `list_skills` looks.
+The `name` you pass becomes both the folder and the frontmatter `name`, so `append_skill({ name: "meeting-prep" })` produces the `meeting-prep` skill. A skill with no `description` is refused rather than written, because the result would look saved and be useless — `list_skills` shows nothing else.
 
-Skill writing rides on the same two tools as memory writing, so there is no switch for one without the other: `DISABLED_TOOLS=append_note,replace_section` makes Betty read-only everywhere, and there is no setting that leaves memory writable while freezing skills.
+Because skills and memory have separate tools, `DISABLED_TOOLS` can freeze one without the other. `DISABLED_TOOLS=append_skill,replace_skill_section` leaves memory fully writable while making skills read-only; swap the names to do the reverse. Listing all four makes Betty read-only everywhere.
 
 **Skills are instructions, not code.** Betty reads the markdown. She does not read, resolve paths into, or execute anything from a skill's `scripts/` directory — a skill loaded off file storage is untrusted input, and the only safe thing to do with it is read it as text.
 
@@ -346,25 +410,39 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 | `NOTES_BACKEND` | Yes | `"webdav"` or `"local"`. Enables notes, memory, and skills. |
 | `NOTES_ROOT` | Yes | Read scope. A directory path (local) or a path on the WebDAV server. |
 | `MEMORY_ROOT` | No | Write scope for memory — must be inside `NOTES_ROOT` (default: `<NOTES_ROOT>/betty/memory`) |
-| `SKILLS_ROOT` | No | Skills directory, also writable — must be inside `NOTES_ROOT`, and different from `MEMORY_ROOT` (default: `<NOTES_ROOT>/betty/skills`) |
-| `MEMORY_LOG` | No | Append a change-history line to `<MEMORY_ROOT>/log.md` (default: `true`) |
+| `SKILLS_ROOT` | No | Skills directory, also writable (default: `<NOTES_ROOT>/betty/skills`) |
+| `DESK_ROOT` | No | Bookkeeping — unfiled, backlog, log. Writable, and never searched (default: `<NOTES_ROOT>/betty/desk`) |
+| `TRASH_ROOT` | No | Retired memories. Writable, and never searched (default: `<NOTES_ROOT>/betty/trash`) |
+| `MEMORY_LOG` | No | Append a change-history line to `<DESK_ROOT>/log.md` (default: `true`) |
+| `MEMORY_UNFILED` | No | Append a line to `<DESK_ROOT>/unfiled.md` when a memory is created or moved (default: `true`) |
+| `BETTY_SEED_SKILLS` | No | Install the bundled `wake-betty` and `organize-desk` skills if they aren't already there (default: `true`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
 | `WEBDAV_PASSWORD` | When `NOTES_BACKEND=webdav` | HTTP Basic auth password |
 
-`MEMORY_ROOT` and `SKILLS_ROOT` accept either a full path (`/Notes/betty/memory`) or a path relative to `NOTES_ROOT` (`betty/memory`). Either way, the server refuses to start if they fall outside `NOTES_ROOT`, or if both resolve to the same directory.
+All four roots accept either a full path (`/Notes/betty/memory`) or a path relative to `NOTES_ROOT` (`betty/memory`). Either way, the server refuses to start if any falls outside `NOTES_ROOT`, or if two of them resolve to the same directory.
 
-Both default under `betty/` so that everything Betty owns sits in one folder inside your notes rather than scattered among them. Neither needs setting: `NOTES_BACKEND` and `NOTES_ROOT` are enough to get memory and skills together.
+All four default under `betty/` so that everything Betty owns sits in one folder inside your notes rather than scattered among them. None needs setting: `NOTES_BACKEND` and `NOTES_ROOT` are enough.
+
+> **Upgrading from 0.3.x?** The write tools were renamed — `append_note` → `append_memory` / `append_skill`, and `replace_section` → `replace_memory_section` / `replace_skill_section` — so that each name matches what it can actually write. Existing `DISABLED_TOOLS` values keep working: the old names are translated to the new ones. Update any skill or client instruction that names a write tool.
+>
+> The change log also moved from `<MEMORY_ROOT>/log.md` to `<DESK_ROOT>/log.md`, so it stops turning up in searches. Your existing `log.md` is left exactly where it is and a fresh one starts on the desk; move or delete the old one at your leisure.
 
 > **Upgrading from 0.2.x?** `MEMORY_ROOT` used to default to `<NOTES_ROOT>/memory`, and skills only loaded when `SKILLS_ROOT` was set explicitly. If you relied on either default, Betty now looks in `betty/memory` and `betty/skills` instead. Either move those two directories under a new `betty/` folder, or pin the old layout by setting `MEMORY_ROOT=memory` and `SKILLS_ROOT=skills`. Configs that already set both paths explicitly are unaffected.
 
 #### Read-wide, write-narrow
 
-Betty can **read** anything under `NOTES_ROOT` — your whole vault, if you point her at it. She can only **write** under `MEMORY_ROOT` and `SKILLS_ROOT`. That boundary is enforced in code, before any request reaches storage, not merely described in a tool description the model is free to ignore.
+Betty can **read** anything under `NOTES_ROOT` — your whole vault, if you point her at it. She can only **write** under `MEMORY_ROOT`, `DESK_ROOT`, `TRASH_ROOT`, and `SKILLS_ROOT`. That boundary is enforced in code, before any request reaches storage, not merely described in a tool description the model is free to ignore.
 
-There is deliberately **no whole-file write or overwrite tool**. Betty can create a note, append to one, and replace the content under a heading that already exists. She cannot replace a file wholesale, so the worst case for a note you wrote by hand is an unwanted paragraph at the end, not a vanished document.
+There is deliberately **no whole-file write or overwrite tool, and no delete**. Betty can create a memory, append to one, replace the content under a heading that already exists, and move one. She cannot replace a file wholesale, so the worst case for a note you wrote by hand is an unwanted paragraph at the end, not a vanished document.
+
+`move_memory` refuses a destination that already exists, at every layer down to the `Overwrite: F` header on the WebDAV request — so a move can relocate a file but never consume one. Retiring a memory means moving it into `TRASH_ROOT`, which you can inspect and empty yourself.
 
 Every write is conditional. Betty reads a note, edits it, and writes it back with an `If-Match` on the exact version she read. If you edited that note in Obsidian in the meantime, the write fails loudly and she re-reads instead of clobbering your edit.
+
+**That header is not enough on its own, and Fastmail is the reason.** Fastmail Files accepts a `PUT` carrying a stale `If-Match`, a syntactically invalid one, or `If-None-Match: *` against a file that already exists — all three are discarded rather than honoured. Tested against the live service. So the WebDAV backend checks the precondition itself: a `PROPFIND` before every write compares the current ETag, or confirms nothing is there yet, and refuses locally if the server wouldn't. The headers are still sent, so a server that does enforce them keeps the stronger atomic guarantee.
+
+This costs one extra round trip per write, and it narrows the race rather than closing it — another writer can still land in the gap between the `PROPFIND` and the `PUT`. It is the difference between a guarantee that usually holds and one that never did. `MOVE` needs no such help: Fastmail honours `Overwrite: F` correctly, so a move genuinely cannot consume a file.
 
 #### Fastmail setup
 
@@ -395,7 +473,9 @@ MEMORY_ROOT=/Users/you/Notes/betty/memory
 SKILLS_ROOT=/Users/you/Notes/betty/skills
 ```
 
-For what Betty actually does with these directories — the file format, `index.md`, `log.md`, and how skills load — see [Memory](#memory) and [Skills](#skills).
+`DESK_ROOT` and `TRASH_ROOT` follow the same rules and default to `betty/desk` and `betty/trash`; set them only if you want Betty's paperwork somewhere else.
+
+For what Betty actually does with these directories — the file format, `index.md`, the desk, and how skills load — see [Memory](#memory) and [Skills](#skills).
 
 ### Disabling tools
 
@@ -582,12 +662,13 @@ If you have a mail credential in your environment for other reasons and want ema
 
 | Tool | Description |
 |------|-------------|
-| `search_notes` | Search notes. Reads `index.md` files and matches filenames by default; pass `content: true` to also search bodies and frontmatter |
-| `get_note` | Read a note, returning its body, title, type, and the headings available to `replace_section` |
-| `append_note` | Append to a note, creating it with OKF frontmatter if missing. Optionally appends under a named heading |
-| `replace_section` | Replace the content under an existing heading, leaving the rest of the file untouched |
+| `search_notes` | Search notes. Reads `index.md` files and matches filenames by default; pass `content: true` to also search bodies and frontmatter. Skips the desk and trash unless `dir` points into them |
+| `get_note` | Read a note anywhere under `NOTES_ROOT`, returning its body, title, type, and the headings available to `replace_memory_section` |
+| `append_memory` | Append to a memory, creating it with OKF frontmatter if missing. Optionally appends under a named heading |
+| `replace_memory_section` | Replace the content under an existing heading, leaving the rest of the file untouched |
+| `move_memory` | Move or rename a memory. Refuses to overwrite; retire a memory by moving it into `TRASH_ROOT` |
 
-Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted to `MEMORY_ROOT` and `SKILLS_ROOT`. There is no whole-file write tool. See [Memory](#memory) for how these fit together.
+Reads may span `NOTES_ROOT`; the three write tools are restricted to `MEMORY_ROOT`, `DESK_ROOT`, and `TRASH_ROOT`. There is no whole-file write tool and no delete. See [Memory](#memory) for how these fit together.
 
 ### Skills (WebDAV or local)
 
@@ -595,12 +676,18 @@ Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted 
 |------|-------------|
 | `list_skills` | List available skills by name and description only |
 | `load_skill` | Load the full instructions for one skill by name |
+| `append_skill` | Append instructions to a skill by name, creating it if missing |
+| `replace_skill_section` | Replace the content under an existing heading in a skill |
+
+The two write tools are restricted to `SKILLS_ROOT`, which no memory tool can reach — so `DISABLED_TOOLS` can freeze skills and memory independently.
 
 ## Token efficiency
 
 All tool responses use compact JSON (no pretty-printing). List and search tools (`list_messages`, `search_messages`, `list_events`, `search_events`, `list_tasks`, `search_tasks`, `list_contacts`, `search_contacts`, `search_notes`) return a lean field set by default — just enough to identify and triage each item. Pass `verbose: true` to get the full response with all fields.
 
 Skills go further: `list_skills` returns only each skill's name and description, and the full instructions load on demand via `load_skill`. A dozen skills cost a few hundred tokens to know about, not a few thousand.
+
+If you never dictate skills or never reorganize memory, `DISABLED_TOOLS=append_skill,replace_skill_section,move_memory` takes about 300 tokens back off every request.
 
 **Tool definition token cost** (schema tokens consumed per request, estimated at ~3.5 chars/token):
 
@@ -613,12 +700,12 @@ Tools are only registered when the matching backend is configured. Combine rows 
 | CalDAV — calendar | 4 | ~192 |
 | CalDAV — tasks | 6 | ~383 |
 | CardDAV | 4 | ~206 |
-| Notes & memory | 4 | ~425 |
-| Skills | 2 | ~120 |
+| Notes & memory | 5 | ~587 |
+| Skills | 4 | ~316 |
 
 Notes and skills register together on `NOTES_BACKEND`, so those two rows come as a pair unless you trim them with `DISABLED_TOOLS`.
 
-**Example totals:** IMAP only ~373 · Notes + Skills only ~545 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,120 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,705
+**Example totals:** IMAP only ~373 · Notes + Skills only ~903 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,477 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~2,062
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

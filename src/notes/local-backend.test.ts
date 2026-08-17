@@ -182,3 +182,99 @@ describe("write() — conditional update", () => {
     await expect(backend.write("../escape.md", "x")).rejects.toThrow(/escapes NOTES_ROOT/);
   });
 });
+
+describe("move()", () => {
+  it("moves a file and leaves nothing at the source", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+
+    await backend.move("sam.md", "people/sam.md");
+
+    expect(await readFile(join(root, "people/sam.md"), "utf8")).toBe("# Sam");
+    await expect(readFile(join(root, "sam.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("creates missing parent directories", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+
+    await backend.move("sam.md", "trash/2026/sam.md");
+
+    expect(await readFile(join(root, "trash/2026/sam.md"), "utf8")).toBe("# Sam");
+  });
+
+  it("refuses an existing destination and leaves its bytes intact", async () => {
+    // rename(2) silently replaces the destination, so asserting only that it
+    // threw would miss a clobber. The surviving bytes are the real assertion.
+    await writeFile(join(root, "sam.md"), "# Sam");
+    await writeFile(join(root, "other.md"), "# Someone else");
+
+    await expect(backend.move("sam.md", "other.md")).rejects.toThrow(NoteConflictError);
+
+    expect(await readFile(join(root, "other.md"), "utf8")).toBe("# Someone else");
+    expect(await readFile(join(root, "sam.md"), "utf8")).toBe("# Sam");
+  });
+
+  it("leaves no placeholder behind when it refuses", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+    await writeFile(join(root, "other.md"), "# Someone else");
+
+    await expect(backend.move("sam.md", "other.md")).rejects.toThrow();
+
+    expect((await backend.list("")).map((e) => e.name).sort()).toEqual(["other.md", "sam.md"]);
+  });
+
+  it("throws NoteNotFoundError for a missing source", async () => {
+    await expect(backend.move("nope.md", "trash/nope.md")).rejects.toThrow(NoteNotFoundError);
+  });
+
+  it("throws NoteNotFoundError when the source is a directory", async () => {
+    await mkdir(join(root, "folder"));
+
+    await expect(backend.move("folder", "trash/folder")).rejects.toThrow(NoteNotFoundError);
+  });
+
+  it("refuses a move onto itself", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+
+    await expect(backend.move("sam.md", "sam.md")).rejects.toThrow(NoteConflictError);
+    expect(await readFile(join(root, "sam.md"), "utf8")).toBe("# Sam");
+  });
+
+  it("refuses to move outside the root", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+
+    await expect(backend.move("sam.md", "../escape.md")).rejects.toThrow(/escapes NOTES_ROOT/);
+    await expect(backend.move("../escape.md", "sam2.md")).rejects.toThrow(/escapes NOTES_ROOT/);
+  });
+
+  it("moves the etag with the file", async () => {
+    await writeFile(join(root, "sam.md"), "# Sam");
+    const before = (await backend.read("sam.md")).etag;
+
+    await backend.move("sam.md", "people/sam.md");
+
+    expect((await backend.read("people/sam.md")).etag).toBe(before);
+  });
+});
+
+describe("move() when both paths are the same file", () => {
+  it("renames rather than reporting a conflict", async () => {
+    // Stands in for a case-only rename on APFS/NTFS, where the destination
+    // resolves to the same inode as the source and the exclusive-create
+    // placeholder would otherwise report "already exists". A hard link
+    // reproduces that condition on any filesystem.
+    const { link } = await import("node:fs/promises");
+    await writeFile(join(root, "Priya.md"), "# Priya");
+    await link(join(root, "Priya.md"), join(root, "priya.md"));
+
+    await expect(backend.move("Priya.md", "priya.md")).resolves.toBeUndefined();
+    expect(await readFile(join(root, "priya.md"), "utf8")).toBe("# Priya");
+  });
+
+  it("still refuses a genuinely different file at the destination", async () => {
+    await writeFile(join(root, "a.md"), "# A");
+    await writeFile(join(root, "b.md"), "# B");
+
+    await expect(backend.move("a.md", "b.md")).rejects.toThrow(NoteConflictError);
+    expect(await readFile(join(root, "b.md"), "utf8")).toBe("# B");
+  });
+});

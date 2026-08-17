@@ -20,8 +20,14 @@ const EMAIL_TOOLS = [
   "send_message",
 ];
 
-const NOTES_TOOLS = ["append_note", "get_note", "replace_section", "search_notes"];
-const SKILL_TOOLS = ["list_skills", "load_skill"];
+const NOTES_TOOLS = [
+  "append_memory",
+  "get_note",
+  "move_memory",
+  "replace_memory_section",
+  "search_notes",
+];
+const SKILL_TOOLS = ["append_skill", "list_skills", "load_skill", "replace_skill_section"];
 
 /** Register against the recording stub and return the harness. */
 function setup(env: NodeJS.ProcessEnv) {
@@ -221,10 +227,58 @@ describe("notes and skills gating", () => {
     ).toThrow(/must be inside NOTES_ROOT/);
   });
 
-  it("refuses to point memory and skills at the same directory", () => {
+  it("rejects a DESK_ROOT or TRASH_ROOT outside NOTES_ROOT", () => {
+    expect(() => setup({ ...NOTES_ONLY, DESK_ROOT: "/Users/you/Elsewhere" })).toThrow(
+      /must be inside NOTES_ROOT/
+    );
+    expect(() => setup({ ...NOTES_ONLY, TRASH_ROOT: "/Users/you/Elsewhere" })).toThrow(
+      /must be inside NOTES_ROOT/
+    );
+  });
+
+  it.each([
+    ["memory and skills", { MEMORY_ROOT: "betty", SKILLS_ROOT: "betty" }],
+    ["memory and desk", { MEMORY_ROOT: "betty", DESK_ROOT: "betty" }],
+    // Values outside betty/ so these exercise exact equality rather than
+    // tripping the nesting check on the other two roots' defaults.
+    ["desk and trash", { DESK_ROOT: "shared", TRASH_ROOT: "shared" }],
+    ["skills and trash", { SKILLS_ROOT: "shared", TRASH_ROOT: "shared" }],
+  ])("refuses to point %s at the same directory", (_label, roots) => {
+    // Two roots at one path would make list_skills enumerate memories as
+    // skills, or hide the desk among the memories it exists to be separate
+    // from. Fail at startup rather than unpick it at runtime.
+    expect(() => setup({ ...NOTES_ONLY, ...roots })).toThrow(/must be different directories/);
+  });
+
+  it.each([
+    ["skills inside memory", { MEMORY_ROOT: "betty" }],
+    ["desk inside memory", { MEMORY_ROOT: "betty", SKILLS_ROOT: "elsewhere/skills" }],
+    ["memory inside skills", { SKILLS_ROOT: "betty" }],
+    ["trash inside desk", { DESK_ROOT: "betty", MEMORY_ROOT: "m", SKILLS_ROOT: "s" }],
+  ])("refuses overlapping roots — %s", (_label, roots) => {
+    // Distinct strings are not enough. assertWritable is a prefix check, so a
+    // memory root containing the skills root would let append_memory write a
+    // SKILL.md with OKF frontmatter — a skill list_skills silently skips, which
+    // is exactly what separate memory and skill tools exist to prevent.
+    expect(() => setup({ ...NOTES_ONLY, ...roots })).toThrow(/must not sit inside/);
+  });
+
+  it("accepts four sibling roots", () => {
     expect(() =>
-      setup({ ...NOTES_ONLY, MEMORY_ROOT: "betty", SKILLS_ROOT: "betty" })
-    ).toThrow(/must be different directories/);
+      setup({
+        ...NOTES_ONLY,
+        MEMORY_ROOT: "a/memory",
+        SKILLS_ROOT: "a/skills",
+        DESK_ROOT: "a/desk",
+        TRASH_ROOT: "a/trash",
+      })
+    ).not.toThrow();
+  });
+
+  it("registers the same tools when the desk writers are turned off", () => {
+    // A behaviour flag must not quietly become a registration gate.
+    const { names } = setup({ ...NOTES_ONLY, MEMORY_LOG: "false", MEMORY_UNFILED: "false" });
+    expect(names()).toEqual([...NOTES_TOOLS, ...SKILL_TOOLS].sort());
   });
 
   it("requires the WebDAV triple for NOTES_BACKEND=webdav", () => {
@@ -242,21 +296,27 @@ describe("default roots", () => {
    */
   async function refusalFor(env: NodeJS.ProcessEnv) {
     const { call } = setup(env);
-    const result = await call("append_note", { path: "journal/today.md", content: "x" });
+    const result = await call("append_memory", { path: "journal/today.md", content: "x" });
     expect(result.isError).toBe(true);
     return result.content[0].text as string;
   }
 
-  it("defaults both of Betty's roots under betty/", async () => {
+  it("defaults Betty's memory-side roots under betty/", async () => {
     expect(await refusalFor(NOTES_ONLY)).toMatch(
-      /"betty\/memory\/" or "betty\/skills\/"/
+      /"betty\/memory\/" or "betty\/desk\/" or "betty\/trash\/"/
     );
+  });
+
+  it("keeps the skills root out of the memory write scope", async () => {
+    // append_memory must not be able to silently produce a skill; that is what
+    // append_skill is for.
+    expect(await refusalFor(NOTES_ONLY)).not.toMatch(/betty\/skills/);
   });
 
   it("no longer treats a bare memory/ as writable", async () => {
     // The 0.2.x default. Anyone who relied on it must now set MEMORY_ROOT.
     const { call } = setup(NOTES_ONLY);
-    const result = await call("append_note", { path: "memory/sam.md", content: "x" });
+    const result = await call("append_memory", { path: "memory/sam.md", content: "x" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
@@ -266,10 +326,11 @@ describe("default roots", () => {
     const text = await refusalFor({
       ...NOTES_ONLY,
       MEMORY_ROOT: "memory",
-      SKILLS_ROOT: "skills",
+      DESK_ROOT: "desk",
+      TRASH_ROOT: "bin",
     });
 
-    expect(text).toMatch(/"memory\/" or "skills\/"/);
+    expect(text).toMatch(/"memory\/" or "desk\/" or "bin\/"/);
     expect(text).not.toMatch(/betty\//);
   });
 });

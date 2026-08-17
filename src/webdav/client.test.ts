@@ -195,3 +195,113 @@ describe("WebDavError", () => {
     expect(new WebDavError(412, "precondition failed").status).toBe(412);
   });
 });
+
+describe("move()", () => {
+  it("sends MOVE with an absolute same-origin Destination", async () => {
+    await new WebDavClient(CONFIG).move("/notes/a.md", "/notes/trash/a.md");
+
+    const { url, init } = lastCall();
+    expect(init.method).toBe("MOVE");
+    expect(url).toBe("https://dav.example.com/notes/a.md");
+    // RFC 4918 requires a full URL here; relative forms are not portable.
+    expect(init.headers.Destination).toBe("https://dav.example.com/notes/trash/a.md");
+  });
+
+  it("defaults Overwrite to F so the server refuses rather than replaces", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/b.md");
+
+    expect(lastCall().init.headers.Overwrite).toBe("F");
+  });
+
+  it("sends Overwrite T only when asked", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/b.md", { overwrite: true });
+
+    expect(lastCall().init.headers.Overwrite).toBe("T");
+  });
+
+  it("percent-encodes a destination containing a space", async () => {
+    // Destination is a literal header value that nothing normalizes, and a raw
+    // space makes fetch reject the request before it leaves the process.
+    // Filenames with spaces are the common case in a human's vault.
+    await new WebDavClient(CONFIG).move("/a.md", "/trash/my note.md");
+
+    expect(lastCall().init.headers.Destination).toBe("https://dav.example.com/trash/my%20note.md");
+  });
+
+  it("refuses a destination on a foreign origin", async () => {
+    await expect(
+      new WebDavClient(CONFIG).move("/a.md", "https://evil.example.com/a.md")
+    ).rejects.toThrow(/foreign origin/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a 412 as a WebDavError with its status", async () => {
+    fetchMock.mockResolvedValue(makeResponse("", { status: 412 }));
+
+    await expect(new WebDavClient(CONFIG).move("/a.md", "/b.md")).rejects.toMatchObject({
+      status: 412,
+    });
+  });
+});
+
+describe("move() destination encoding", () => {
+  it("escapes a # so the server does not read the rest as a fragment", async () => {
+    // encodeURI leaves # intact; the server would then move the file to
+    // "/notes/C" instead of "/notes/C# tips.md".
+    await new WebDavClient(CONFIG).move("/a.md", "/notes/C# tips.md");
+
+    expect(lastCall().init.headers.Destination).toBe(
+      "https://dav.example.com/notes/C%23%20tips.md"
+    );
+  });
+
+  it("escapes a ? so the server does not read the rest as a query", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/notes/why? notes.md");
+
+    expect(lastCall().init.headers.Destination).toBe(
+      "https://dav.example.com/notes/why%3F%20notes.md"
+    );
+  });
+
+  it("keeps path separators and the origin intact", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/notes/betty/trash/x.md");
+
+    expect(lastCall().init.headers.Destination).toBe(
+      "https://dav.example.com/notes/betty/trash/x.md"
+    );
+  });
+
+  it("does not double-encode an already-escaped destination", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/notes/my%20note.md");
+
+    expect(lastCall().init.headers.Destination).toBe("https://dav.example.com/notes/my%20note.md");
+  });
+
+  it("passes a malformed percent-escape through rather than throwing", async () => {
+    await new WebDavClient(CONFIG).move("/a.md", "/notes/100%.md");
+
+    expect(lastCall().init.headers.Destination).toBe("https://dav.example.com/notes/100%.md");
+  });
+});
+
+describe("request path escaping", () => {
+  it("escapes # in a request URL so the path is not truncated", async () => {
+    // Verified live: without this, GET of "C# tips.md" fetches ".../C" and 404s,
+    // making any note with # or ? in its name unreachable.
+    await new WebDavClient(CONFIG).get("/notes/C# tips.md");
+
+    expect(lastCall().url).toBe("https://dav.example.com/notes/C%23%20tips.md");
+  });
+
+  it("escapes ? in a request URL", async () => {
+    await new WebDavClient(CONFIG).get("/notes/why? notes.md");
+
+    expect(lastCall().url).toBe("https://dav.example.com/notes/why%3F%20notes.md");
+  });
+
+  it("still refuses a foreign origin after escaping", async () => {
+    await expect(new WebDavClient(CONFIG).get("https://evil.example.com/x#y")).rejects.toThrow(
+      /foreign origin/
+    );
+  });
+});

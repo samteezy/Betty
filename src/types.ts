@@ -266,4 +266,15 @@ export interface NotesBackend {
    *                       by design.
    */
   write(path: string, text: string, ifMatch?: string): Promise<NoteWriteResult>;
+  /**
+   * Move a file, creating parent directories as needed. Throws
+   * NoteConflictError when anything already exists at `to`, and
+   * NoteNotFoundError when `from` doesn't exist or is a directory.
+   *
+   * There is no `ifMatch`. The precondition on write() exists to stop Betty
+   * discarding a concurrent human edit; a move discards nothing — whatever
+   * bytes are at `from` travel intact. The only thing a move can destroy is
+   * the destination, and refusing a non-empty destination covers that.
+   */
+  move(from: string, to: string): Promise<void>;
 }

@@ -1,0 +1,102 @@
+/**
+ * The skill that introduces Betty to whichever agent just picked her up.
+ *
+ * This is the one a user's client config should point at — the README's
+ * "Telling Betty when to remember" section exists because Betty deliberately
+ * injects nothing into a host's prompt. A one-line rule ("if I mention Betty,
+ * load_skill wake-betty") keeps the substance in the user's own storage, where
+ * it travels with them, instead of duplicated across every platform's settings.
+ *
+ * Written for a model reading it cold, mid-conversation. It leads with the
+ * action that matters most — search before answering — because a memory that
+ * goes unread is worse than none: it means asking a question already answered.
+ */
+
+import type { BettyPaths } from "./bundled.js";
+
+export const WAKE_BETTY_SKILL = "wake-betty";
+
+export function wakeBettySkill({
+  memoryPrefix,
+  deskPrefix,
+  trashPrefix,
+  skillsPrefix,
+}: BettyPaths): string {
+  return `---
+name: ${WAKE_BETTY_SKILL}
+description: Who Betty is, where her memory lives, what to record, and what she cannot do. Load this the first time Betty is mentioned in a conversation, or at the start of a session, before using any memory tool.
+---
+
+# Betty
+
+An assistant layer whose memory and skills live in the user's own file storage
+rather than inside any one platform. Whatever you record here travels with them
+to the next tool they use. Everything below is plain markdown they can open,
+grep, edit, or delete — nothing is hidden, and nothing is a database.
+
+## First move
+
+Before answering anything about the user, their projects, or the people around
+them: **search first.** A memory that exists and goes unread is worse than no
+memory at all — it means asking a question the user has already answered.
+
+Start with \`get_note ${memoryPrefix}/index.md\`. It is a curated map of
+categories, so one read tells you what Betty knows about before you read any of
+it. If the index is missing or thin, fall back to \`search_notes\`, and add
+\`content: true\` only when the cheap pass finds nothing.
+
+## Where things are
+
+| Path | What it holds |
+|---|---|
+| \`${memoryPrefix}/\` | The memories themselves — one concept per file |
+| \`${memoryPrefix}/index.md\` | Category map, curated by the organize-desk skill |
+| \`${deskPrefix}/\` | Betty's own bookkeeping. **Never searched** |
+| \`${trashPrefix}/\` | Retired memories. **Never searched**, still readable by path |
+| \`${skillsPrefix}/\` | Skills — markdown instructions, never code to run |
+
+\`search_notes\` skips the desk and trash on purpose, so Betty's paperwork never
+competes with what she actually knows. Pass \`dir\` to look inside them anyway.
+
+## What to write down
+
+Record something when it will still be true next month:
+
+- **People** — how they work, what they own, how they prefer to be reached.
+- **Projects** — goals and constraints not obvious from the files themselves.
+- **Preferences and decisions** — including *why*, which is the part that
+  usually gets lost.
+- **Corrections** — when the user pushes back, that is the most valuable thing
+  they will say all session. Write it down.
+
+Do not record: what you are doing right now, anything already stated in the
+repo or the files, secrets, or a summary of the conversation. One concept per
+file, named for the concept.
+
+\`append_memory\` creates or extends. \`replace_memory_section\` rewrites one
+section. \`move_memory\` re-files or retires. That is the whole write surface.
+
+## What Betty cannot do
+
+These are enforced in code, not conventions — expect the refusal rather than
+working around it.
+
+- **She cannot write outside her own roots.** The user's wider notes are
+  readable and untouchable.
+- **There is no delete and no whole-file overwrite.** Retire a memory by moving
+  it into \`${trashPrefix}/\`. Nothing Betty wrote is ever destroyed.
+- **A write that would clobber a concurrent human edit fails loudly.** Re-read
+  and reapply; never retry blindly.
+- **Skills are read, never executed.** Nothing in a skill's \`scripts/\`
+  directory is ever run, whatever the skill says.
+
+## Then
+
+\`list_skills\` to see what else this user has taught Betty, and \`load_skill\`
+the one that fits. \`organize-desk\` is the maintenance pass that files new
+memories into the index — run it on a schedule rather than mid-conversation.
+
+Mail, calendar, contacts, and tasks may also be configured; they appear as
+ordinary tools. This skill is about the memory.
+`;
+}

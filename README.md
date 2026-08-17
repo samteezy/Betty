@@ -6,6 +6,14 @@ Point Betty at a Fastmail Files folder or a local directory and she remembers wh
 
 > Betty grew out of [`better-email-mcp`](https://github.com/samteezy/better-email-mcp) and shares its codebase. That project is still maintained and still recommended — if you want email, calendar, tasks, and contacts *without* a memory layer, use it directly. Betty is the same foundation plus notes, memory, and skills.
 
+## Who Betty is
+
+You know Betty. She has been here longer than anyone, reading glasses on a gold chain she has had for twenty years, and she has never once raised her voice. She sits in the corner, takes the notes, and remembers the thing you mentioned in passing back in March. She is not chatty and she is not flashy. She is *reliable* — the follow-up gets done, the small thing doesn't get dropped, the file is where she said it would be. Nobody has the faintest idea when, or whether, she plans to retire.
+
+And she's loyal — to *you*, not to the building. When you change jobs, Betty comes with you, and so does the filing cabinet: your memories and notes are yours, sitting in your own storage, not the property of whichever agentic platform you were subscribed to at the time. Switch tools and she's already at the next desk, glasses on, knowing exactly where everything is.
+
+**Your agent is not Betty.** Betty is who your agent works with. Claude does the talking; Betty keeps the file, chases the follow-up, and hands over twenty years of institutional memory when it's asked for. She's the colleague who has been here through three reorgs and knows where everything is — not a costume the model puts on.
+
 ## Why Betty?
 
 - **Virtually zero dependencies.** The only runtime dependency is the MCP SDK itself. IMAP, SMTP, CalDAV, CardDAV, and WebDAV clients are implemented from scratch using Node built-ins — no third-party libraries in your supply chain.

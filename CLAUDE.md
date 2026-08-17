@@ -17,7 +17,7 @@ High-level capabilities:
 - **Notes & memory** — WebDAV (Fastmail Files, Nextcloud, etc.) or a local folder
 - **Skills** — markdown `SKILL.md` folders loaded from the same storage
 
-Every non-email protocol activates alongside whichever email backend is configured — it's one server instance with all protocols combined.
+Every capability is independently opt-in and gated on its own env var, and they all run in one server instance combined. **Email is optional like the rest** — `NOTES_BACKEND` alone is a valid configuration, and Betty then registers no email tools at all. If nothing is configured the server refuses to start rather than exposing an empty toolbox.
 
 ## Tech Stack
 
@@ -64,15 +64,15 @@ Report what actually ran. If a step was skipped or a test fails, say so with the
 
 ## Architecture
 
-Entry point is `src/index.ts` — creates the `McpServer`, registers tools, and connects via stdio transport.
+Entry point is `src/index.ts` — a thin shebang wrapper that hands `process.env` to `buildServer()` and connects the stdio transport. The wiring lives in **`src/server.ts`**, the composition root: it takes the environment as a parameter (rather than reading `process.env`) and exports `createEmailBackend()`, `registerAll()`, `buildServer()`, and `connectAll()`. That parameterization is what makes it importable, so `src/server.test.ts` can drive the whole gating matrix through the shared harness — `src/index.ts` itself remains a side-effecting script that can't be imported under Jest.
 
-1. **Email backend adapters** (`src/backends/`) — IMAP and JMAP backends, each implementing the `EmailBackend` interface defined in `src/types.ts`, so the MCP tool layer is backend-agnostic. Backend is selected at startup via `EMAIL_BACKEND` env var.
+1. **Email backend adapters** (`src/backends/`) — IMAP and JMAP backends, each implementing the `EmailBackend` interface defined in `src/types.ts`, so the MCP tool layer is backend-agnostic. Backend is selected at startup via `EMAIL_BACKEND`, or inferred from a `JMAP_TOKEN` / `IMAP_HOST` credential. **Email is optional**: `createEmailBackend()` returns `null` when nothing email-shaped is configured (or on `EMAIL_BACKEND=none`), and the email tools are then never registered. Naming a backend without its credentials is still a startup error.
 
 2. **IMAP client** (`src/imap/`) — zero-dependency IMAP implementation using Node's built-in `net`/`tls` modules. `parser.ts` handles IMAP response parsing (parenthesized lists, envelopes, RFC 2047 decoding). `client.ts` manages the TCP/TLS connection with tagged command/response handling and literal string support. IMAP message IDs use composite `folder:uid` format (e.g. `INBOX:4523`) since UIDs are only unique within a mailbox. Sending requires SMTP configuration (IMAP itself is read-only).
 
 3. **WebDAV transport** (`src/webdav/`) — one `fetch`-based, Basic-auth WebDAV client shared by CalDAV, CardDAV, and notes, with SSRF guards on both request URLs and redirect hops. `xml.ts` is a deliberately narrow regex parser for `DAV:multistatus` only.
 
-4. **CalDAV / CardDAV clients** — calendar and contact access, activated when their respective env vars are set. Work alongside any email backend in a single server instance.
+4. **CalDAV / CardDAV clients** — calendar and contact access, activated when their respective env vars are set. Work alongside any email backend, or with none configured. JMAP contacts are the exception: they ride on the email backend's JMAP session, so they require JMAP email — `CARDDAV_URL` is the way to get contacts without it.
 
 5. **Notes backends** (`src/notes/`) — `NotesBackend` implementations over WebDAV or the local filesystem, selected via `NOTES_BACKEND`. Reads span `NOTES_ROOT`; writes are confined to `MEMORY_ROOT` by a code-enforced prefix check. Every write carries a real `If-Match` ETag and fails loudly on conflict rather than clobbering a concurrent human edit. Memory files use Google's Open Knowledge Format (OKF v0.1) — markdown with YAML frontmatter, one concept per file.
 
@@ -87,21 +87,25 @@ Jest with `ts-jest`. Test files sit next to the code they cover as `*.test.ts`.
 - `tsconfig.json` excludes tests and `src/test-support` from the build; `tsconfig.test.json` includes everything and is what both `ts-jest` and the second half of `npm run typecheck` use. Adding a test-only file means it must be reachable from `tsconfig.test.json`.
 - Prefer the shared harness over hand-rolling a mock server or backend in a test file — the two local copies that existed before were already drifting apart.
 - Tool-layer tests assert on the exact options object the backend received. These layers are a thin passthrough plus a lean projection, so passthrough fidelity is the thing worth pinning down.
+- `src/server.test.ts` covers the composition root's gating matrix — which tools register for a given environment, and which misconfigurations throw at startup. It works because `registerAll(server, env)` takes both the server and the environment as parameters and every backend constructor is I/O-free, so no network or filesystem access is involved. When you add a capability or change a gate, add the case here.
 
 ## Key Design Principles
 
 - **LLM-first tool design**: tool schemas and return values should be easy for a model to reason about. Prefer structured fields over raw protocol output.
-- **Single email backend per instance**: don't multiplex IMAP and JMAP in one running server. CalDAV and CardDAV do run alongside the email backend in the same instance.
+- **Every capability is opt-in, email included**: each activates on its own env var and none is a prerequisite for another. A user who only wants memory and skills should never have to supply mail credentials. When a capability is unconfigured its tools are not registered at all, rather than registered and erroring — an unusable tool still costs context.
+- **Single email backend per instance**: don't multiplex IMAP and JMAP in one running server. CalDAV and CardDAV do run alongside the email backend in the same instance, or without one.
 - **Credentials via environment**: never bake credentials into config files committed to the repo. See README for the full env var reference.
 - **Zero/minimal dependencies**: implement protocol clients from scratch using Node built-ins (`net`/`tls`/`fetch`) to minimize supply chain attack surface. Avoid adding npm packages when the functionality can be implemented with reasonable effort. This extends to formats — the YAML frontmatter parser is hand-rolled rather than pulling in `js-yaml`.
 - **User-disablable tools**: `DISABLED_TOOLS` env var prevents specific tools from being registered. See README for details.
 - **Read-wide, write-narrow**: notes reads may span `NOTES_ROOT`; writes are prefix-checked against `MEMORY_ROOT` and rejected otherwise. Enforced in code, never merely described in a tool description. There is deliberately **no whole-file write or overwrite tool** — the absence is the safety mechanism, so don't add one.
 - **Skills are instructions, not code**: Betty reads markdown from `SKILLS_ROOT`. Nothing in a skill's `scripts/` directory is ever read or executed.
-- **Transport-neutral tool layer**: all `process.env` reading happens in `src/index.ts` and is passed down as config objects. Tool handlers never reach for the environment, so an HTTP transport can be added later without rewriting them. (`parseDisabledTools()` at registration time is the one accepted exception.) This now holds for every tool module — `registerTaskTools`, `registerCalendarTools`, and `registerContactTools` take their defaults as config instead of reading `CALDAV_DEFAULT_CALENDAR` / `CARDDAV_DEFAULT_ADDRESS_BOOK` directly.
+- **Transport-neutral tool layer**: capability configuration is read in `src/server.ts`, which receives the environment as a parameter and passes it down as config objects; `src/index.ts` is the only file that hands it `process.env`. Tool *handlers* never reach for the environment, so an HTTP transport can be added later without rewriting them. This holds for every tool module — `registerTaskTools`, `registerCalendarTools`, and `registerContactTools` take their defaults as config instead of reading `CALDAV_DEFAULT_CALENDAR` / `CARDDAV_DEFAULT_ADDRESS_BOOK` directly.
+
+  Three registration-time reads in the email layer are the remaining exceptions, all pre-existing: `parseDisabledTools()` (`src/tools/helpers.ts`), `parseEmailFormat()` reading `EMAIL_FORMAT` (`src/tools/register.ts:41`), and the module-scope `ATTACHMENT_DIR` (`src/tools/register.ts:16`). None runs inside a handler. Threading them through an `EmailToolConfig` would finish the job — `registerEmailTools` is the one `register*` function that still takes no config object.
 
 ## Versioning
 
-Version lives in two places — `package.json` and the `McpServer` constructor in `src/index.ts`. Both must be updated together.
+Version lives in two places — `package.json` and the `SERVER_VERSION` constant in `src/server.ts` (which feeds the `McpServer` constructor). Both must be updated together.
 
 - **Minor bump** (0.4.0 → 0.5.0): new features, new tools, new capabilities.
 - **Patch bump** (0.4.0 → 0.4.1): bug fixes, refactors, documentation-only changes.
@@ -109,7 +113,7 @@ Version lives in two places — `package.json` and the `McpServer` constructor i
 
 ## Release checklist
 
-1. Bump the version in **both** `package.json` and the `McpServer` constructor in `src/index.ts`.
+1. Bump the version in **both** `package.json` and `SERVER_VERSION` in `src/server.ts`.
 2. Run the full **Preflight** gate above — all green.
 3. `npm run count-tokens` and update the token cost table in `README.md` if tools changed.
 4. `npm publish` (runs `prepublishOnly` → `build`).

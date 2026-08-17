@@ -23,10 +23,25 @@ export interface BettyPaths {
   skillsPrefix: string;
 }
 
+/** What a skill is rendered against: where things are, and what Betty can do. */
+export interface SkillContext extends BettyPaths {
+  /**
+   * The capabilities this server actually has, e.g. `["memory", "skills"]` or
+   * `["memory", "skills", "mail", "calendar"]`.
+   *
+   * Passed in so a skill never volunteers something Betty cannot do. A
+   * memory-only install that mentions mail in passing has told the model Betty
+   * handles email — and the model will offer it, on a server with no mail tools
+   * and no mail credentials. Silence is the correct amount to say about a
+   * capability that is not there.
+   */
+  capabilities: string[];
+}
+
 export interface BundledSkill {
   /** Folder name under SKILLS_ROOT, and the frontmatter `name`. */
   name: string;
-  build(paths: BettyPaths): string;
+  build(context: SkillContext): string;
 }
 
 /**

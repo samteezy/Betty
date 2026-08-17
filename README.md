@@ -431,6 +431,7 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 | `MEMORY_UNFILED` | No | Append a line to `<DESK_ROOT>/unfiled.md` when a memory is created or moved (default: `true`) |
 | `BETTY_SEED_SKILLS` | No | Install the bundled `wake-betty` and `organize-desk` skills if they aren't already there (default: `true`) |
 | `BETTY_WAKE_GATE` | No | Hide every tool behind `wake_betty` until it is called — see [The wake gate](#the-wake-gate) (default: `true`) |
+| `BETTY_PROGRESSIVE_TOOLS` | No | Keep mail, calendar, tasks, and contacts in their drawers at wake, to be opened by `open_drawer` — see [Progressive disclosure](#progressive-disclosure) (default: `true`) |
 | `BETTY_WAKE_REARM_MINUTES` | No | Close the gate again after this many minutes with no tool call. `0` leaves it open for the life of the process (default: `10`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
@@ -502,7 +503,11 @@ wake_betty — Load Betty's instructions and bring her tools online: memory,
              skills, mail, calendar, tasks and contacts. …
 ```
 
-Calling it hands back your own [wake-betty](#wake-betty--the-default) skill and reveals the rest. Two things this buys:
+Calling it brings her core tools online and hands back three things: a list of what just came online, grouped by capability; your own [wake-betty](#wake-betty--the-default) skill; and a closing nudge to search memory and call `list_skills` before answering.
+
+The tool list matters more than it looks. Waking is the one moment in a session when a model's tool list is stale — the gate fires `notifications/tools/list_changed`, but until the client acts on it the model is still looking at a list holding only `wake_betty`, and a model that doesn't believe a tool exists won't call it. Naming them in the reply closes that window. `list_skills` is the other half of the same question: the tools are what Betty *can* do, the skills are what you have *taught* her to do.
+
+Two things the gate buys:
 
 - **Betty carries her own bootstrap.** Without the gate, the wake-betty skill only loads if you write a client-side rule for it — the one part of Betty that has to be re-done on every platform you use her from. A visible tool whose description is the trigger travels with her.
 - **~104 tokens instead of ~2,062.** A full configuration's tool schemas ride in the context window of every request, whether or not Betty comes up. Asleep, she costs one small tool definition.
@@ -514,6 +519,40 @@ Recovering from a re-arm mid-conversation is deliberately cheap: the model calls
 **Turn it off with `BETTY_WAKE_GATE=false`** if your client doesn't act on `notifications/tools/list_changed` — waking works by telling the client the tool list changed, and a client that never refetches will see one tool forever. Claude Code and Claude Desktop both refetch. `DISABLED_TOOLS=wake_betty` turns the gate off too, since a gate with no key would strand every other tool.
 
 The gate requires `NOTES_BACKEND`. With no memory layer configured there is no skill to wake into, so a mail-and-calendar-only server is never gated.
+
+### Progressive disclosure
+
+Waking does not reveal everything. Memory and skills come online — they are what waking is *for* — while mail, calendar, tasks, and contacts stay hidden behind one more step:
+
+```
+open_drawer — Open one of Betty's drawers to reveal the tools inside: mail,
+              calendar, tasks and contacts. …
+```
+
+Her desk has drawers, and mail is in one of them. The wake reply lists what's in each **by tool name**, so the model can see that `list_events` and `search_events` exist without carrying their schemas. One call opens a drawer for the rest of the session; the gate remembers, so a later re-arm and re-wake leaves it open.
+
+(Drawers are capabilities, not the `desk/` folder — that one is Betty's bookkeeping, tidied by [organize-desk](#organize-desk).)
+
+This is why the awake tier costs ~1,109 tokens instead of ~2,062 on a full configuration. A conversation about the user's week never pays for mail.
+
+**Turn it off with `BETTY_PROGRESSIVE_TOOLS=false`** to have waking reveal everything at once, as it did before 0.6.0. `open_drawer` then never registers, since there would be no drawer for it to open.
+
+### When a credential doesn't authenticate
+
+Every backend authenticates at startup — a JMAP session fetch, an IMAP `LOGIN`, a CalDAV `PROPFIND`. A capability that is configured but *not accepted* is taken out of service rather than taking the server down with it:
+
+```
+betty-mcp: mail is configured but did not authenticate (401 Unauthorized) —
+           its tools stay hidden for this session.
+```
+
+Betty starts. Memory, skills, and anything else that authenticated work normally. The failed capability leaves nothing behind: its tools never appear, `wake_betty`'s description stops naming it, `open_drawer` will not open it, and the bundled `wake-betty` skill is seeded without mentioning it. A model cannot offer the user something Betty has no working credential for.
+
+Two boundaries worth knowing:
+
+- **Notes are still fatal.** A notes root that can't be reached is a configuration error you have to fix, and Betty with no memory isn't a smaller Betty.
+- **Degrading needs the gate.** With `BETTY_WAKE_GATE=false` the tools are plainly registered and there are no handles to take back, so a failed connect exits the process — exactly as it did before, and as `better-email-mcp` still does.
+- **JMAP contacts fall with mail**, since they ride on the same session; CalDAV calendar and tasks fall together for the same reason.
 
 ### Disabling tools
 
@@ -660,7 +699,8 @@ If you have a mail credential in your environment for other reasons and want ema
 
 | Tool | Description |
 |------|-------------|
-| `wake_betty` | Hand back the `wake-betty` skill and bring every other tool online. Pass `loaded: true` to re-enable them without re-sending instructions the model already has |
+| `wake_betty` | Bring Betty's core tools online, then hand back the names of the tools just revealed, the names of the ones held back, and the `wake-betty` skill. Pass `loaded: true` to re-enable them without re-sending instructions the model already has |
+| `open_drawer` | Open one of Betty's drawers to reveal its tools — `mail`, `calendar`, `tasks`, or `contacts`. Only registered while Betty is awake, and only when a drawer is actually being held shut |
 
 The only tool visible until it's called. Registered whenever `NOTES_BACKEND` is set, unless `BETTY_WAKE_GATE=false` — see [The wake gate](#the-wake-gate).
 
@@ -748,13 +788,22 @@ Tools are only registered when the matching backend is configured. Combine rows 
 | CardDAV | 4 | ~206 |
 | Notes & memory | 5 | ~587 |
 | Skills | 4 | ~316 |
+| `open_drawer` (awake, a drawer to open) | 1 | ~98 |
 | **Asleep** (any of the above, gate on) | **1** | **~104** |
 
 Notes and skills register together on `NOTES_BACKEND`, so those two rows come as a pair unless you trim them with `DISABLED_TOOLS`.
 
 **Example totals:** IMAP only ~373 · Notes + Skills only ~903 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,477 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~2,062
 
-Those are the *awake* numbers. With [the wake gate](#the-wake-gate) on — the default whenever `NOTES_BACKEND` is set — every one of them is ~104 until something calls `wake_betty`, and drops back after `BETTY_WAKE_REARM_MINUTES` of quiet.
+Those are the *fully open* numbers — every capability revealed at once. What a full configuration actually costs is three tiers deep:
+
+| Tier | What the model can see | Est. tokens |
+|------|------------------------|-------------|
+| Asleep | `wake_betty` | ~104 |
+| Awake | memory, skills, `open_drawer` — and the *names* of what is in each drawer | ~1,105 |
+| Every drawer open | all 29 tools | ~2,062 |
+
+The middle tier is where most conversations stay. Waking costs about half of what it used to, and mail schemas arrive only in the conversations that are about mail — see [Progressive disclosure](#progressive-disclosure). Both upper tiers drop back to ~104 after `BETTY_WAKE_REARM_MINUTES` of quiet.
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

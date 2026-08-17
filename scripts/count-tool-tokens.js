@@ -19,6 +19,7 @@ const { registerContactTools } = require("../dist/tools/contacts.js");
 const { registerNotesTools } = require("../dist/tools/notes.js");
 const { registerSkillsTools } = require("../dist/tools/skills.js");
 const { registerWakeTool } = require("../dist/tools/wake.js");
+const { registerOpenTool } = require("../dist/tools/open.js");
 
 // ── Mock McpServer ───────────────────────────────────────────────────────
 
@@ -137,6 +138,23 @@ registerWakeTool(wakeServer, {
   disabled: new Set(),
 });
 
+// The second tier: what a model sees once Betty is awake, before it opens a
+// drawer. Costed against every deferred group, which is the widest its
+// description ever gets.
+const { server: openServer, tools: openTools } = createCapturingServer();
+registerOpenTool(openServer, {
+  gate: {
+    openGroup: () => "opened",
+    inventory: ["mail", "calendar", "tasks", "contacts"].map((group) => ({
+      group,
+      tools: [],
+      open: false,
+      deferred: true,
+    })),
+  },
+  disabled: new Set(),
+});
+
 const protocols = [
   { label: "IMAP", tools: imapTools, note: "plain text" },
   { label: "JMAP", tools: jmapTools, note: "EMAIL_FORMAT=html adds htmlBody to send_email" },
@@ -146,6 +164,7 @@ const protocols = [
   { label: "Notes / memory", tools: notesTools, note: "NOTES_BACKEND=webdav|local" },
   { label: "Skills", tools: skillsTools, note: "NOTES_BACKEND=webdav|local" },
   { label: "Wake gate", tools: wakeTools, note: "all a client sees until wake_betty is called" },
+  { label: "Drawer opener", tools: openTools, note: "visible while awake, when a drawer is held shut" },
 ];
 
 for (const proto of protocols) {
@@ -175,6 +194,10 @@ const configs = [
     groups: [jmapTools, calTools, taskTools, cardTools, notesTools, skillsTools],
   },
   { label: "Everything, gated (before wake_betty)", groups: [wakeTools] },
+  {
+    label: "Everything, awake (before open_drawer)",
+    groups: [notesTools, skillsTools, openTools, wakeTools],
+  },
 ];
 
 for (const cfg of configs) {

@@ -23,7 +23,8 @@ import { registerTaskTools } from "./tools/tasks.js";
 import { registerContactTools } from "./tools/contacts.js";
 import { registerNotesTools } from "./tools/notes.js";
 import { registerSkillsTools } from "./tools/skills.js";
-import { registerWakeTool, WAKE_TOOL } from "./tools/wake.js";
+import { describeWakeTool, registerWakeTool, WAKE_TOOL } from "./tools/wake.js";
+import { describeOpenTool, deferredGroups, registerOpenTool } from "./tools/open.js";
 import { parseDisabledTools, toolEnabled } from "./tools/helpers.js";
 import { ToolGate, parseRearmMs } from "./gate.js";
 import { WebDavClient } from "./webdav/client.js";
@@ -38,7 +39,7 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.5.1";
+export const SERVER_VERSION = "0.6.0";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -75,6 +76,19 @@ export interface Backends {
    * timers so the gating matrix can be tested without either.
    */
   gate?: ToolGate;
+  /**
+   * Take a capability out of service because its backend never authenticated.
+   *
+   * Registration happens before any connect — it has to, since registerAll is
+   * I/O-free — so this is how a startup that got as far as "credentials are
+   * present" reports back that they were not accepted. It hides the tools *and*
+   * rewrites what `wake_betty` and `open_drawer` say, so a mail token the
+   * user revoked leaves nothing behind that would offer them mail.
+   *
+   * Only set when the gate is active: without it the tools are plainly
+   * registered and there are no handles to take back.
+   */
+  withdrawCapability?: (capability: string, reason: string) => void;
 }
 
 /**
@@ -199,13 +213,24 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
   // wake tool's own registration must never come from two different reads.
   const disabledTools = parseDisabledTools(env.DISABLED_TOOLS ?? "");
   const gate = wakeGateFor(server, env, disabledTools);
-  // Everything below registers through `target`, so the gate collects a handle
-  // for each tool. `wake_betty` itself goes on the bare server.
-  const target = gate ? gate.wrap(server) : server;
+  // Everything below registers through `wrap(capability)`, so the gate collects
+  // a handle for each tool and knows which capability it belongs to — that
+  // grouping is what `wake_betty` reads back to a model whose tool list has not
+  // caught up yet. The labels are the ones describeCapabilities() uses, so the
+  // wake description and the wake reply name the same things. `wake_betty`
+  // itself goes on the bare server.
+  //
+  // A `deferred` capability registers exactly as the others do but stays hidden
+  // when Betty wakes, until something calls `open_drawer` for it by name.
+  // Memory and skills are never deferred — they are what waking is *for*, and a
+  // model that has to ask twice before it can search would search less.
+  const defer = env.BETTY_PROGRESSIVE_TOOLS !== "false";
+  const wrap = (capability: string, deferred = false): McpServer =>
+    gate ? gate.wrap(server, capability, { deferred: deferred && defer }) : server;
 
   // Email — activates when EMAIL_BACKEND, JMAP_TOKEN, or IMAP_HOST is set
   const email = createEmailBackend(env);
-  if (email) registerEmailTools(target, email);
+  if (email) registerEmailTools(wrap("mail", true), email);
 
   // CalDAV — activates when CALDAV_URL is set
   let calendar: CalDavBackend | null = null;
@@ -224,8 +249,8 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     });
     // Resolved here, at the composition root, so tool handlers never touch env.
     const defaultCalendar = env.CALDAV_DEFAULT_CALENDAR?.trim() || undefined;
-    registerCalendarTools(target, calendar, { defaultCalendar });
-    registerTaskTools(target, calendar, { defaultCalendar });
+    registerCalendarTools(wrap("calendar", true), calendar, { defaultCalendar });
+    registerTaskTools(wrap("tasks", true), calendar, { defaultCalendar });
   }
 
   // Contacts — CardDAV when CARDDAV_URL is set, otherwise JMAP contacts when using JMAP backend
@@ -244,13 +269,13 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
       username,
       password,
     });
-    registerContactTools(target, contacts, { defaultAddressBook });
+    registerContactTools(wrap("contacts", true), contacts, { defaultAddressBook });
   } else if (email instanceof JmapBackend) {
     // JMAP contacts activate automatically — no extra config needed. They ride
     // on the email backend's session, so they need JMAP email to be configured;
     // CARDDAV_URL is the way to get contacts without it.
     contacts = new JmapContactsBackend(email);
-    registerContactTools(target, contacts, { defaultAddressBook });
+    registerContactTools(wrap("contacts", true), contacts, { defaultAddressBook });
   }
 
   // Notes, memory, and skills — activate when NOTES_BACKEND is set
@@ -303,7 +328,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     };
 
     notes = createNotesBackend(env, env.NOTES_BACKEND, notesRoot);
-    registerNotesTools(target, notes, {
+    registerNotesTools(wrap("memory"), notes, {
       notesRoot,
       memoryPrefix: roots.MEMORY_ROOT,
       deskPrefix: roots.DESK_ROOT,
@@ -311,7 +336,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
       writeLog: env.MEMORY_LOG !== "false",
       writeUnfiled: env.MEMORY_UNFILED !== "false",
     });
-    registerSkillsTools(target, notes, { skillsPrefix: roots.SKILLS_ROOT });
+    registerSkillsTools(wrap("skills"), notes, { skillsPrefix: roots.SKILLS_ROOT });
   }
 
   // Now that email is optional, "nothing configured" is reachable for the first
@@ -330,20 +355,74 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
   // first tools/list already shows nothing but wake_betty. `notes` is always
   // set when the gate is — wakeGateFor only returns one for NOTES_BACKEND — but
   // the check is what tells the compiler that too.
+  let withdrawCapability: Backends["withdrawCapability"];
   if (gate && notes && notesPaths) {
-    // Bound to consts so the narrowing survives into the closure below.
+    // Bound to consts so the narrowing survives into the closures below.
+    const activeGate = gate;
     const notesBackend = notes;
     const paths = notesPaths;
-    gate.arm();
-    registerWakeTool(server, {
-      gate,
-      capabilities: describeCapabilities({ email, calendar, contacts }),
-      instructions: () => readWakeInstructions(notesBackend, paths),
+
+    // Registered *before* arm(), so the gate holds it like any other tool and
+    // it is hidden while Betty sleeps. It sits in its own group so that opening
+    // a drawer can never take away the means of opening the next one.
+    const openTool = registerOpenTool(wrap("betty"), {
+      gate: activeGate,
       disabled: disabledTools,
     });
+
+    activeGate.arm();
+    const wakeTool = registerWakeTool(server, {
+      gate: activeGate,
+      capabilities: describeCapabilities({ email, calendar, contacts }),
+      instructions: () =>
+        readWakeInstructions(
+          notesBackend,
+          paths,
+          describeCapabilities({ email, calendar, contacts })
+        ),
+      // Read at call time, not now: this runs mid-registration in a direct
+      // caller's hands, and a snapshot taken here could miss a later tool.
+      inventory: () => activeGate.inventory,
+      disabled: disabledTools,
+    });
+
+    withdrawCapability = (capability, reason) => {
+      if (!activeGate.withdraw(capability)) return;
+      process.stderr.write(
+        `betty-mcp: ${capability} is configured but did not authenticate (${reason}) — ` +
+          `its tools stay hidden for this session.\n`
+      );
+      // Rewrite what the two always-visible descriptions claim. Both were
+      // written when the capability still looked live, and a description that
+      // offers mail Betty cannot reach is worse than no mention at all — the
+      // model promises the user something, then finds no tool to do it with.
+      const live = activeGate.inventory.map((group) => group.group);
+      wakeTool?.update({
+        description: describeWakeTool(
+          describeCapabilities({ email, calendar, contacts }).filter((name) => live.includes(name))
+        ),
+      });
+      const openable = deferredGroups(activeGate).map((group) => group.group);
+      if (openable.length > 0) {
+        openTool?.update({ description: describeOpenTool(openable) });
+      } else {
+        // Nothing left to open. Withdraw the tool through the gate rather than
+        // disabling the handle, or the next wake would enable it again along
+        // with everything else.
+        activeGate.withdraw("betty");
+      }
+    };
   }
 
-  return { email, calendar, contacts, notes, notesPaths, gate: gate ?? undefined };
+  return {
+    email,
+    calendar,
+    contacts,
+    notes,
+    notesPaths,
+    gate: gate ?? undefined,
+    withdrawCapability,
+  };
 }
 
 /**
@@ -394,17 +473,35 @@ function describeCapabilities(backends: {
  */
 export async function readWakeInstructions(
   notes: NotesBackend,
-  paths: NotesPaths
+  paths: NotesPaths,
+  capabilities: string[] = []
 ): Promise<string> {
   const path = `${paths.skillsPrefix}/${WAKE_BETTY_SKILL}/SKILL.md`;
   try {
     return parseNote((await notes.read(path)).text).body;
   } catch (err) {
     if (!(err instanceof NoteNotFoundError)) throw err;
-    // The bundled text still names the roots this server is actually running
-    // with, so it is a real fallback rather than a generic apology.
-    return parseNote(wakeBettySkill(paths)).body;
+    // The bundled text still names the roots and capabilities this server is
+    // actually running with, so it is a real fallback rather than a generic
+    // apology.
+    return parseNote(wakeBettySkill({ ...paths, capabilities })).body;
   }
+}
+
+/**
+ * The capabilities a running server actually has — configured, and still
+ * standing after connect.
+ *
+ * The gate's inventory is the authority once there is one, because it is the
+ * only thing that knows a capability was withdrawn for failing to authenticate.
+ * Its own control group ("betty") is not a capability anyone should be told
+ * about, so it drops out with everything else the caller did not configure.
+ */
+function liveCapabilities(backends: Backends): string[] {
+  const configured = describeCapabilities(backends);
+  if (!backends.gate) return configured;
+  const live = new Set(backends.gate.inventory.map((group) => group.group));
+  return configured.filter((name) => live.has(name));
 }
 
 /** Build a real McpServer with every configured capability registered on it. */
@@ -420,19 +517,68 @@ export function buildServer(env: NodeJS.ProcessEnv): {
   return { server, backends };
 }
 
-/** Connect every configured backend. */
+/**
+ * Connect every configured backend.
+ *
+ * A credential that is present but not accepted takes its own capability out of
+ * service rather than the whole server: the tools stay hidden, the descriptions
+ * stop mentioning it, and a warning goes to stderr. A revoked mail token is a
+ * reason to have no mail, not a reason to have no memory.
+ *
+ * That degradation needs the gate — it owns the handles, and without one the
+ * tools are plainly registered with no way to take them back. So on an ungated
+ * server a failed connect is still fatal, which is exactly how it behaved
+ * before, and how `better-email-mcp` behaves today.
+ *
+ * Notes are the exception in the other direction: still fatal, gate or no gate.
+ * A notes root that cannot be reached is a configuration error the user has to
+ * fix, and Betty with no memory is not a smaller Betty — she is a mail client.
+ */
 export async function connectAll(backends: Backends): Promise<void> {
+  const withdraw = backends.withdrawCapability;
+
+  const attempt = async (capabilities: string[], connect: () => Promise<void>) => {
+    try {
+      await connect();
+      return true;
+    } catch (err) {
+      if (!withdraw) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      for (const capability of capabilities) withdraw(capability, reason);
+      return false;
+    }
+  };
+
   // Email goes first: JmapContactsBackend rides on the email backend's session
   // and throws if that connect() hasn't run yet.
-  if (backends.email) await backends.email.connect();
-  if (backends.calendar) await backends.calendar.connect();
-  if (backends.contacts) await backends.contacts.connect();
+  const jmapContacts = backends.contacts instanceof JmapContactsBackend;
+  let emailOk = true;
+  if (backends.email) {
+    const email = backends.email;
+    // JMAP contacts have no session of their own, so they fall with mail.
+    emailOk = await attempt(["mail", ...(jmapContacts ? ["contacts"] : [])], () =>
+      email.connect()
+    );
+  }
+  if (backends.calendar) {
+    const calendar = backends.calendar;
+    // One CalDAV backend serves both, so they stand or fall together.
+    await attempt(["calendar", "tasks"], () => calendar.connect());
+  }
+  if (backends.contacts && !(jmapContacts && !emailOk)) {
+    const contacts = backends.contacts;
+    await attempt(["contacts"], () => contacts.connect());
+  }
   // The gate's idle timer starts here rather than at registration, so
   // server.test.ts never leaves one running.
   backends.gate?.startSweeping();
   if (backends.notes) {
     await backends.notes.connect();
-    if (backends.notesPaths) await seedBundledSkills(backends.notes, backends.notesPaths);
+    if (backends.notesPaths) {
+      // Read after the connects above, so a capability that failed to
+      // authenticate is not written into the skill as something Betty offers.
+      await seedBundledSkills(backends.notes, backends.notesPaths, liveCapabilities(backends));
+    }
   }
 }
 
@@ -447,12 +593,16 @@ export async function connectAll(backends: Backends): Promise<void> {
  * Each skill is seeded independently: one that fails, or one the user has
  * deleted on purpose and does not want back, must not stop the others.
  */
-async function seedBundledSkills(notes: NotesBackend, paths: NotesPaths): Promise<void> {
+async function seedBundledSkills(
+  notes: NotesBackend,
+  paths: NotesPaths,
+  capabilities: string[]
+): Promise<void> {
   if (!paths.seedSkills) return;
   for (const skill of BUNDLED_SKILLS) {
     const path = `${paths.skillsPrefix}/${skill.name}/SKILL.md`;
     try {
-      await notes.write(path, skill.build(paths));
+      await notes.write(path, skill.build({ ...paths, capabilities }));
     } catch (err) {
       if (err instanceof NoteConflictError) continue; // already there — leave it alone
       // Seeding a skill is a convenience, never a reason to refuse to start.

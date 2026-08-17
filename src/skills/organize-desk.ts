@@ -9,11 +9,15 @@
  * memory index. A test enforces the absence.
  */
 
-import type { BettyPaths } from "./bundled.js";
+import type { SkillContext } from "./bundled.js";
 
 export const ORGANIZE_DESK_SKILL = "organize-desk";
 
-export function organizeDeskSkill({ memoryPrefix, deskPrefix, trashPrefix }: BettyPaths): string {
+export function organizeDeskSkill({
+  memoryPrefix,
+  deskPrefix,
+  trashPrefix,
+}: SkillContext): string {
   return `---
 name: ${ORGANIZE_DESK_SKILL}
 description: Tidy Betty's memory — file newly captured memories into the category index, merge or retire stale ones, and surface the backlog. Use on a schedule (daily or weekly), or when asked to organize or tidy memory. Not for email.

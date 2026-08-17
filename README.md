@@ -14,44 +14,118 @@ Point Betty at a Fastmail Files folder or a local directory and she remembers wh
 - **You control what the LLM can do.** Disable any tool with a single environment variable — enforce read-only access, hide search, or strip it down to just what you need. Less tool clutter means better LLM performance. Betty's writes are confined to a directory you nominate, enforced in code.
 - **Token-efficient.** List and search responses return only essential fields by default. Pass `verbose: true` for full details when needed. Skills load by name on demand rather than filling the context window up front.
 
+## Memory
 
-### Token efficiency
+Betty's memory is a folder of markdown files. No database, no embedding index, no proprietary store — the entire mechanism is files you can open, grep, edit, and delete.
 
-All tool responses use compact JSON (no pretty-printing). List and search tools (`list_messages`, `search_messages`, `list_events`, `search_events`, `list_tasks`, `search_tasks`, `list_contacts`, `search_contacts`, `search_notes`) return a lean field set by default — just enough to identify and triage each item. Pass `verbose: true` to get the full response with all fields.
+### Recall
 
-Skills go further: `list_skills` returns only each skill's name and description, and the full instructions load on demand via `load_skill`. A dozen skills cost a few hundred tokens to know about, not a few thousand.
+`search_notes` works outward from the strongest signal. It reads the markdown links inside any `index.md` you've curated, then matches filenames straight off the directory listing — neither of which costs a file read. Pass `content: true` to also read bodies and frontmatter (one read per file, capped at 100). Every result carries `matchedOn` — `index`, `frontmatter`, `path`, or `body` — and results are ranked in that order, so the model can tell a curated hit from a coincidental filename match. `get_note` then reads the one that looked right, returning the body plus the list of headings available to `replace_section`.
 
-**Tool definition token cost** (schema tokens consumed per request, estimated at ~3.5 chars/token):
+When a search hits its bounds it says so — `truncated: true` with a reason — rather than returning a short list that looks complete.
 
-Tools are only registered when the matching backend is configured. Combine rows to estimate your setup:
+### Storing
 
-| Protocol | Tools | Est. tokens |
-|----------|-------|-------------|
-| IMAP | 6 | ~373 |
-| JMAP (`EMAIL_FORMAT=html` adds `htmlBody`) | 6 | ~380 |
-| CalDAV — calendar | 4 | ~192 |
-| CalDAV — tasks | 6 | ~383 |
-| CardDAV | 4 | ~206 |
-| Notes & memory | 4 | ~403 |
-| Skills | 2 | ~120 |
+Two tools, both confined to `MEMORY_ROOT`:
 
-**Example totals:** IMAP only ~373 · Notes + Skills only ~523 · IMAP + CalDAV + Tasks ~947 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,683
+- **`append_note`** adds content to a note, creating it with OKF frontmatter if it doesn't exist. Pass `heading` to append under an existing section instead of at the end of the file.
+- **`replace_section`** rewrites the content under a heading that already exists, leaving the rest of the file untouched. If the heading doesn't exist, the error lists the ones that do, so the model can retry instead of guessing.
 
-Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
+That is the entire write surface — see [read-wide, write-narrow](#read-wide-write-narrow) for why there is nothing else.
 
-**Default fields by tool type:**
+### What a memory file looks like
 
-| Tool type | Default fields | Additional with `verbose: true` |
-|-----------|---------------|--------------------------------|
-| Email list/search | `id`, `from`, `subject`, `date`, `snippet` | `to`, `cc`, `isRead`, `folder` |
-| Calendar list/search | `id`, `href`, `title`, `start`, `end`, `location`, `allDay` | `description`, `organizer`, `attendees`, `status`, `recurrence`, `calendar` |
-| Task list/search | `id`, `href`, `title`, `status`, `due`, `priority` | `description`, `categories`, `start`, `completed`, `percentComplete`, `recurrence`, `calendar` |
-| Contact list/search | `id`, `href`, `name`, `emails`, `phones` | `organization`, `title`, `address`, `notes`, `addressBook` |
-| Note search | `path`, `matchedOn`, `title`, `snippet` | `description` |
-| `get_note` | `path`, `title`, `type`, `headings`, `body` | full `frontmatter`, `etag`, `hasFrontmatter` |
-| `list_skills` | `name`, `description` | `path`, `invalid` |
+Memory files follow Google's [Open Knowledge Format](https://github.com/google/open-knowledge-format) (OKF v0.1): markdown with YAML frontmatter, one concept per file, interlinked with plain markdown links.
 
-The `folder`, `calendar`, and `addressBook` fields are automatically included in lean responses when no filter is applied (listing across all), and omitted when filtering by a specific one (since it's redundant).
+Ask Betty to remember how a colleague likes to work, and she writes:
+
+```markdown
+---
+type: person
+title: Priya Raman
+description: Engineering manager on the billing team
+timestamp: 2026-08-17T14:22:09Z
+source: betty
+---
+
+# Priya Raman
+
+Prefers async updates over standups. Owns the billing migration.
+```
+
+OKF requires only `type`, but Google's own reference parser expects all four of `type`, `title`, `description`, and `timestamp`, so Betty always writes all four — `type` defaults to `note`, and `description` falls back to the title. The `source: betty` key is Betty's own addition: everything she wrote stays greppable, and deletable in bulk, without touching anything you wrote yourself.
+
+Frontmatter keys are written in a fixed order — the four required ones, then the rest alphabetically — so a note she rewrites produces a clean diff instead of a reshuffled block.
+
+### index.md — the part worth curating
+
+`search_notes` reads `index.md` files before anything else and follows the markdown links inside them. Link *text* is matched as well as link target, so an index is how you tell Betty what a note is about without her having to read it:
+
+```markdown
+# People
+
+- [Priya Raman — billing, async-first](people/priya-raman.md)
+- [Dan Whitfield — vendor contact at Acme](people/dan-whitfield.md)
+```
+
+A hit here outranks every other kind. One curated index turns a folder Betty has to scan into one she can navigate.
+
+### log.md — what she changed
+
+Every write appends a line to `<MEMORY_ROOT>/log.md`:
+
+```markdown
+- 2026-08-17T14:22:09Z `create` [memory/people/priya-raman.md](memory/people/priya-raman.md)
+- 2026-08-17T14:31:44Z `append` [memory/projects/betty.md](memory/projects/betty.md) — Open questions
+```
+
+A chronological record of what Betty did to your notes, kept in the notes themselves. Set `MEMORY_LOG=false` to turn it off. Logging is deliberately best-effort: the note write has already succeeded by that point, so a logging failure comes back as a `warning` on a successful write rather than as a failed one.
+
+Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely, and memory you can't see isn't memory you can trust.
+
+### Telling Betty when to remember
+
+Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both. A line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — is usually all it takes:
+
+> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_note` it under `memory/`.
+
+Better still, point that instruction at a skill (`list_skills`, then `load_skill`) so the substance lives in your storage and travels between platforms, leaving the client-side config a one-liner.
+
+## Skills
+
+A skill is a folder containing a `SKILL.md`: frontmatter with `name` and `description`, then markdown instructions. It's the standard format, and unknown frontmatter keys are ignored rather than rejected, so skills written for other tools generally load unchanged.
+
+```
+skills/
+  inbox-triage/
+    SKILL.md
+  weekly-review/
+    SKILL.md
+```
+
+One level deep, a folder per skill. The `SKILL.md` itself is just instructions you'd otherwise repeat every session:
+
+```markdown
+---
+name: inbox-triage
+description: Sort the inbox into reply-now, waiting-on, and archive. Use when asked to triage, clear, or catch up on email.
+---
+
+# Inbox triage
+
+1. `list_messages` for the last 24 hours.
+2. Group into **reply now**, **waiting on someone**, and **archive**.
+3. For anything from a name in `memory/people/`, `get_note` it first — reply in the register that note describes.
+4. Draft nothing without showing me the grouped list.
+```
+
+The `description` is the part that earns its keep. `list_skills` returns only names and descriptions, so the description is all the model has when deciding whether a skill is worth loading — write it to say *when to use this*, not merely what it is. `load_skill` then returns the full instructions, matched on the skill's `name` or its folder name, case-insensitively.
+
+Both `name` and `description` are required. A folder whose `SKILL.md` is missing either one is skipped and counted in `skippedFolders` — pass `verbose: true` to `list_skills` to see which and why. A folder with no `SKILL.md` at all simply isn't a skill, and isn't reported as a problem.
+
+Because skills live in your storage rather than in a platform's account settings, they travel with you: point Betty at the same folder from a different agent host and she arrives already knowing how you work.
+
+**Skills are instructions, not code.** Betty reads the markdown. She does not read, resolve paths into, or execute anything from a skill's `scripts/` directory — a skill loaded off file storage is untrusted input, and the only safe thing to do with it is read it as text.
 
 ## Setup
 
@@ -199,43 +273,7 @@ MEMORY_ROOT=/Users/you/Notes/memory
 SKILLS_ROOT=/Users/you/Notes/skills
 ```
 
-#### Memory format
-
-Memory files follow Google's [Open Knowledge Format](https://github.com/google/open-knowledge-format) (OKF v0.1): markdown with YAML frontmatter, one concept per file, interlinked with plain markdown links, `index.md` for directory listings, and `log.md` for change history.
-
-```markdown
----
-type: person
-title: Sam Taylor
-description: Notes about Sam
-timestamp: 2026-08-17T10:00:00Z
-source: betty
----
-
-# Sam Taylor
-
-Prefers email over calls. See [Project Betty](../projects/betty.md).
-```
-
-OKF requires only `type`, but Google's own reference parser expects all four of `type`, `title`, `description`, and `timestamp`, so Betty always writes all four. The `source: betty` key is Betty's own addition — everything she wrote stays greppable, and deletable in bulk, without touching anything you wrote yourself.
-
-Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely, and memory you can't see isn't memory you can trust.
-
-#### Skills
-
-A skill is a folder containing a `SKILL.md`, in the standard format — frontmatter with `name` and `description`, then markdown instructions. Unknown frontmatter keys are ignored, so skills written for other tools generally load unchanged.
-
-```
-skills/
-  inbox-triage/
-    SKILL.md
-  deep-research/
-    SKILL.md
-```
-
-Because skills live in your storage rather than in a platform's account settings, they travel with you: point Betty at the same folder from a different agent host and she arrives already knowing how you work.
-
-**Skills are instructions, not code.** Betty reads the markdown. She does not read, resolve paths into, or execute anything from a skill's `scripts/` directory — a skill loaded off file storage is untrusted input, and the only safe thing to do with it is read it as text.
+For what Betty actually does with these directories — the file format, `index.md`, `log.md`, and how skills load — see [Memory](#memory) and [Skills](#skills).
 
 ### Disabling tools
 
@@ -421,9 +459,7 @@ Betty needs an email backend configured, but nothing stops you from disabling th
 | `append_note` | Append to a note, creating it with OKF frontmatter if missing. Optionally appends under a named heading |
 | `replace_section` | Replace the content under an existing heading, leaving the rest of the file untouched |
 
-Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted to `MEMORY_ROOT`. There is no whole-file write tool.
-
-Each `search_notes` result carries `matchedOn` — `index` (linked from a curated `index.md`), `frontmatter`, `path`, or `body` — so the model can tell a deliberate hit from a coincidental filename match. When a search hits its bounds it returns `truncated: true` with a reason, rather than a short list that looks complete.
+Reads may span `NOTES_ROOT`; `append_note` and `replace_section` are restricted to `MEMORY_ROOT`. There is no whole-file write tool. See [Memory](#memory) for how these fit together.
 
 ### Skills (WebDAV or local)
 
@@ -431,3 +467,45 @@ Each `search_notes` result carries `matchedOn` — `index` (linked from a curate
 |------|-------------|
 | `list_skills` | List available skills by name and description only |
 | `load_skill` | Load the full instructions for one skill by name |
+
+## Token efficiency
+
+All tool responses use compact JSON (no pretty-printing). List and search tools (`list_messages`, `search_messages`, `list_events`, `search_events`, `list_tasks`, `search_tasks`, `list_contacts`, `search_contacts`, `search_notes`) return a lean field set by default — just enough to identify and triage each item. Pass `verbose: true` to get the full response with all fields.
+
+Skills go further: `list_skills` returns only each skill's name and description, and the full instructions load on demand via `load_skill`. A dozen skills cost a few hundred tokens to know about, not a few thousand.
+
+**Tool definition token cost** (schema tokens consumed per request, estimated at ~3.5 chars/token):
+
+Tools are only registered when the matching backend is configured. Combine rows to estimate your setup:
+
+| Protocol | Tools | Est. tokens |
+|----------|-------|-------------|
+| IMAP | 6 | ~373 |
+| JMAP (`EMAIL_FORMAT=html` adds `htmlBody`) | 6 | ~380 |
+| CalDAV — calendar | 4 | ~192 |
+| CalDAV — tasks | 6 | ~383 |
+| CardDAV | 4 | ~206 |
+| Notes & memory | 4 | ~403 |
+| Skills | 2 | ~120 |
+
+**Example totals:** IMAP only ~373 · Notes + Skills only ~523 · IMAP + CalDAV + Tasks ~947 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~1,683
+
+Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
+
+**Default fields by tool type:**
+
+| Tool type | Default fields | Additional with `verbose: true` |
+|-----------|---------------|--------------------------------|
+| Email list/search | `id`, `from`, `subject`, `date`, `snippet` | `to`, `cc`, `isRead`, `folder` |
+| Calendar list/search | `id`, `href`, `title`, `start`, `end`, `location`, `allDay` | `description`, `organizer`, `attendees`, `status`, `recurrence`, `calendar` |
+| Task list/search | `id`, `href`, `title`, `status`, `due`, `priority` | `description`, `categories`, `start`, `completed`, `percentComplete`, `recurrence`, `calendar` |
+| Contact list/search | `id`, `href`, `name`, `emails`, `phones` | `organization`, `title`, `address`, `notes`, `addressBook` |
+| Note search | `path`, `matchedOn`, `title`, `snippet` | `description` |
+| `get_note` | `path`, `title`, `type`, `headings`, `body` | full `frontmatter`, `etag`, `hasFrontmatter` |
+| `list_skills` | `name`, `description` | `path`, `invalid` |
+
+The `folder`, `calendar`, and `addressBook` fields are automatically included in lean responses when no filter is applied (listing across all), and omitted when filtering by a specific one (since it's redundant).
+
+## License
+
+[GNU AGPL v3](LICENSE). If you run a modified Betty as a network service, the AGPL requires you to offer that service's users the corresponding source.

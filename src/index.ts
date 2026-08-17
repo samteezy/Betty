@@ -104,7 +104,7 @@ function createNotesBackend(backendType: string, notesRoot: string): NotesBacken
 
 const server = new McpServer({
   name: "betty-mcp",
-  version: "0.7.0",
+  version: "0.1.0",
 });
 
 const backend = createBackend();

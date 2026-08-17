@@ -27,8 +27,12 @@ const RENAMED_TOOLS = new Map<string, string[]>([
   ["replace_section", ["replace_memory_section", "replace_skill_section"]],
 ]);
 
-export function parseDisabledTools(): Set<string> {
-  const raw = process.env.DISABLED_TOOLS ?? "";
+/**
+ * `raw` defaults to `process.env.DISABLED_TOOLS` for the registration-time
+ * callers in each tool module. The composition root passes its own `env` value
+ * instead, since it never reaches for `process.env` directly.
+ */
+export function parseDisabledTools(raw = process.env.DISABLED_TOOLS ?? ""): Set<string> {
   if (!raw.trim()) return new Set();
   const names = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   const disabled = new Set(names);

@@ -1,7 +1,14 @@
-import { buildServer, createEmailBackend, registerAll } from "./server";
+import {
+  buildServer,
+  createEmailBackend,
+  readWakeInstructions,
+  registerAll,
+} from "./server";
 import { JmapBackend } from "./backends/jmap";
 import { ImapBackend } from "./backends/imap";
 import { harness } from "./test-support/mcp";
+import { MemoryNotesBackend } from "./test-support/backends";
+import { withEnv } from "./test-support/env";
 
 /**
  * Composition-root tests.
@@ -29,10 +36,16 @@ const NOTES_TOOLS = [
 ];
 const SKILL_TOOLS = ["append_skill", "list_skills", "load_skill", "replace_skill_section"];
 
-/** Register against the recording stub and return the harness. */
+/**
+ * Register against the recording stub and return the harness.
+ *
+ * The wake gate is off by default here: these cases are about which tools a
+ * given environment *registers*, which is a separate question from which of
+ * them are visible before Betty wakes. The gate has its own describe block.
+ */
 function setup(env: NodeJS.ProcessEnv) {
   return harness((server) => {
-    registerAll(server, env);
+    registerAll(server, { BETTY_WAKE_GATE: "false", ...env });
   });
 }
 
@@ -332,6 +345,157 @@ describe("default roots", () => {
 
     expect(text).toMatch(/"memory\/" or "desk\/" or "bin\/"/);
     expect(text).not.toMatch(/betty\//);
+  });
+});
+
+describe("wake gate", () => {
+  /** Register with the gate left at its default: on. */
+  function gated(env: NodeJS.ProcessEnv = {}) {
+    return harness((server) => registerAll(server, { ...NOTES_ONLY, ...env }));
+  }
+
+  it("shows nothing but wake_betty before Betty is woken", () => {
+    const h = gated();
+    expect(h.names()).toEqual(["wake_betty"]);
+  });
+
+  it("still registers everything — the tools are hidden, not absent", () => {
+    expect(gated().allNames()).toEqual(
+      [...NOTES_TOOLS, ...SKILL_TOOLS, "wake_betty"].sort()
+    );
+  });
+
+  it("refuses a gated tool until it is woken", () => {
+    const h = gated();
+    expect(() => h.call("get_note", { path: "betty/memory/index.md" })).toThrow(
+      /get_note disabled/
+    );
+  });
+
+  it("reveals every tool on wake, with one list_changed for the batch", async () => {
+    const h = gated();
+    await h.call("wake_betty", { loaded: true });
+
+    expect(h.names()).toEqual([...NOTES_TOOLS, ...SKILL_TOOLS, "wake_betty"].sort());
+    expect(h.listChangedCount()).toBe(1);
+  });
+
+  it("gates the mail and calendar tools too", async () => {
+    const h = gated({
+      JMAP_TOKEN: "token",
+      CALDAV_URL: "https://caldav.fastmail.com/",
+      CALDAV_USERNAME: "you@fastmail.com",
+      CALDAV_PASSWORD: "pw",
+    });
+
+    expect(h.names()).toEqual(["wake_betty"]);
+    await h.call("wake_betty", { loaded: true });
+    expect(h.names()).toEqual(expect.arrayContaining(["list_messages", "list_events"]));
+  });
+
+  it("names the configured capabilities, and only those", () => {
+    const notesOnly = gated().tools.get("wake_betty")?.description ?? "";
+    expect(notesOnly).toContain("memory and skills");
+    expect(notesOnly).not.toContain("mail");
+
+    const withMail = gated({ JMAP_TOKEN: "token" }).tools.get("wake_betty")?.description;
+    expect(withMail).toContain("mail");
+    expect(withMail).toContain("contacts"); // JMAP contacts ride along
+  });
+
+  it("stays off when BETTY_WAKE_GATE=false", () => {
+    const h = gated({ BETTY_WAKE_GATE: "false" });
+    expect(h.names()).not.toContain("wake_betty");
+    expect(h.names()).toEqual([...NOTES_TOOLS, ...SKILL_TOOLS].sort());
+  });
+
+  it("stays off with no notes backend — there would be nothing to wake into", () => {
+    // A mail-and-calendar-only server is better-email-mcp's shape. Gating it
+    // would be ceremony with no skill behind it, and would break that config
+    // on upgrade.
+    const h = setup({
+      BETTY_WAKE_GATE: undefined,
+      JMAP_TOKEN: "token",
+    });
+    expect(h.names()).toContain("list_messages");
+    expect(h.names()).not.toContain("wake_betty");
+  });
+
+  it("refuses to arm when DISABLED_TOOLS names wake_betty", () => {
+    // Otherwise the gate would have no key and every other tool would be
+    // unreachable for the life of the process.
+    const h = gated({ DISABLED_TOOLS: "wake_betty" });
+    expect(h.names()).toEqual([...NOTES_TOOLS, ...SKILL_TOOLS].sort());
+  });
+
+  it("arms from the passed environment, not process.env", () => {
+    // registerAll takes its environment as a parameter, so the two can differ.
+    // When they did, the gate armed from the parameter while the wake tool
+    // skipped itself on process.env — leaving a gate with no key and every
+    // tool stranded for the life of the connection.
+    withEnv({ DISABLED_TOOLS: "wake_betty" }, () => {
+      const h = gated();
+      expect(h.names()).toEqual(["wake_betty"]);
+    });
+  });
+
+  it("rejects a malformed BETTY_WAKE_REARM_MINUTES at startup", () => {
+    expect(() => gated({ BETTY_WAKE_REARM_MINUTES: "soon" })).toThrow(
+      /BETTY_WAKE_REARM_MINUTES/
+    );
+  });
+
+  it("hands connectAll a gate to sweep", () => {
+    const { backends } = buildServer(NOTES_ONLY);
+    expect(backends.gate).toBeDefined();
+    expect(backends.gate?.awake).toBe(false);
+  });
+});
+
+describe("readWakeInstructions", () => {
+  const paths = {
+    notesRoot: "/Notes",
+    memoryPrefix: "betty/memory",
+    skillsPrefix: "betty/skills",
+    deskPrefix: "betty/desk",
+    trashPrefix: "betty/trash",
+    seedSkills: true,
+  };
+
+  it("returns the user's own copy, without its frontmatter", async () => {
+    // Whatever they have edited the skill into is Betty's boot prompt.
+    const notes = new MemoryNotesBackend();
+    notes.seed(
+      "betty/skills/wake-betty/SKILL.md",
+      "---\nname: wake-betty\ndescription: d\n---\n\n# Mine\n\nDo it my way.\n"
+    );
+
+    const text = await readWakeInstructions(notes, paths);
+
+    expect(text).toContain("Do it my way.");
+    expect(text).not.toContain("description: d");
+  });
+
+  it("falls back to the bundled text when the skill is missing", async () => {
+    // BETTY_SEED_SKILLS=false, or the user deleted it. The fallback still names
+    // the roots this server is running with.
+    const text = await readWakeInstructions(new MemoryNotesBackend(), {
+      ...paths,
+      memoryPrefix: "vault/brain",
+    });
+
+    expect(text).toContain("vault/brain");
+  });
+
+  it("propagates a real storage failure rather than papering over it", async () => {
+    const notes = new MemoryNotesBackend();
+    notes.read = async () => {
+      throw new Error("storage unreachable");
+    };
+
+    await expect(readWakeInstructions(notes, paths)).rejects.toThrow(
+      "storage unreachable"
+    );
   });
 });
 

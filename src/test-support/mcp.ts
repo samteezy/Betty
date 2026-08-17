@@ -26,14 +26,22 @@ export interface CapturedTool {
   /** The raw Zod shape passed to server.tool(), for schema assertions. */
   schema: unknown;
   handler: ToolHandler;
+  /**
+   * Stands in for the SDK's `RegisteredTool.enabled`. The wake gate flips this
+   * field on the handle `server.tool()` returns, so the stub has to return one
+   * for the gate to have anything to hold.
+   */
+  enabled: boolean;
 }
 
 /** Records server.tool() registrations without constructing a real McpServer. */
 export function captureServer(): {
   server: McpServer;
   tools: Map<string, CapturedTool>;
+  listChanged: { count: number };
 } {
   const tools = new Map<string, CapturedTool>();
+  const listChanged = { count: 0 };
   const server = {
     tool: (
       name: string,
@@ -41,18 +49,38 @@ export function captureServer(): {
       schema: unknown,
       handler: ToolHandler
     ) => {
-      tools.set(name, { name, description, schema, handler });
+      const captured: CapturedTool = {
+        name,
+        description,
+        schema,
+        handler,
+        enabled: true,
+      };
+      tools.set(name, captured);
+      return captured;
+    },
+    /** The wake gate notifies through this; tests can count the calls. */
+    sendToolListChanged: () => {
+      listChanged.count += 1;
     },
   };
   // The tool layer only ever calls .tool(); `as never` keeps the cast honest
   // by not claiming the stub implements the rest of McpServer.
-  return { server: server as never, tools };
+  return { server: server as never, tools, listChanged };
 }
 
 export interface ToolHarness {
   tools: Map<string, CapturedTool>;
-  /** Registered tool names, sorted — for exact registration assertions. */
+  /**
+   * Enabled tool names, sorted — what a client's `tools/list` would return.
+   * A gated-but-registered tool is deliberately absent, since being registered
+   * is not the same as being reachable.
+   */
   names(): string[];
+  /** Every registered name, enabled or not. */
+  allNames(): string[];
+  /** How many `tools/list_changed` notifications have been sent. */
+  listChangedCount(): number;
   /** Invoke a tool handler. Throws if the tool was never registered. */
   call(name: string, args?: Record<string, unknown>): Promise<ToolResult>;
   /**
@@ -72,7 +100,7 @@ export interface ToolHarness {
  *   const tasks = await h.json("list_tasks");
  */
 export function harness(register: (server: McpServer) => void): ToolHarness {
-  const { server, tools } = captureServer();
+  const { server, tools, listChanged } = captureServer();
   register(server);
 
   const call = (name: string, args: Record<string, unknown> = {}) => {
@@ -80,6 +108,9 @@ export function harness(register: (server: McpServer) => void): ToolHarness {
     // Fail on the missing registration rather than on `undefined is not a
     // function` three frames deeper.
     if (!tool) throw new Error(`Tool not registered: ${name}`);
+    // The SDK refuses to dispatch to a disabled tool, so a test that reaches
+    // one through the gate should fail here rather than quietly succeed.
+    if (!tool.enabled) throw new Error(`Tool ${name} disabled`);
     return tool.handler(args);
   };
 
@@ -88,7 +119,10 @@ export function harness(register: (server: McpServer) => void): ToolHarness {
 
   return {
     tools,
-    names: () => [...tools.keys()].sort(),
+    names: () =>
+      [...tools.values()].filter((t) => t.enabled).map((t) => t.name).sort(),
+    allNames: () => [...tools.keys()].sort(),
+    listChangedCount: () => listChanged.count,
     call,
     json: async <T = any>(name: string, args: Record<string, unknown> = {}) =>
       JSON.parse(await text(name, args)) as T,

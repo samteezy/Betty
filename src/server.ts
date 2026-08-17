@@ -23,17 +23,22 @@ import { registerTaskTools } from "./tools/tasks.js";
 import { registerContactTools } from "./tools/contacts.js";
 import { registerNotesTools } from "./tools/notes.js";
 import { registerSkillsTools } from "./tools/skills.js";
+import { registerWakeTool, WAKE_TOOL } from "./tools/wake.js";
+import { parseDisabledTools, toolEnabled } from "./tools/helpers.js";
+import { ToolGate, parseRearmMs } from "./gate.js";
 import { WebDavClient } from "./webdav/client.js";
 import { LocalNotesBackend } from "./notes/local-backend.js";
 import { WebDavNotesBackend } from "./notes/webdav-backend.js";
 import { isUnderPrefix, normalizeRoot, resolveSubRoot } from "./notes/paths.js";
-import { NoteConflictError } from "./notes/errors.js";
+import { NoteConflictError, NoteNotFoundError } from "./notes/errors.js";
+import { parseNote } from "./notes/okf.js";
 import { BUNDLED_SKILLS } from "./skills/bundled.js";
+import { WAKE_BETTY_SKILL, wakeBettySkill } from "./skills/wake-betty.js";
 import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.4.0";
+export const SERVER_VERSION = "0.5.0";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -64,6 +69,12 @@ export interface Backends {
   notes: NotesBackend | null;
   /** Set whenever `notes` is — connectAll needs the roots to seed the skill. */
   notesPaths?: NotesPaths;
+  /**
+   * Set when the wake gate is active. connectAll starts its idle sweep; the
+   * timer lives there rather than in registerAll, which stays free of I/O and
+   * timers so the gating matrix can be tested without either.
+   */
+  gate?: ToolGate;
 }
 
 /**
@@ -179,9 +190,22 @@ function createNotesBackend(
  * from `src/test-support/mcp.ts` instead of a real McpServer and transport.
  */
 export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends {
+  // The wake gate. Tools register normally but start disabled, leaving
+  // `wake_betty` as the only thing a client's first tools/list returns. It is
+  // tied to the memory layer: with no NOTES_BACKEND there is no wake-betty
+  // skill to wake into, and gating a pure mail-and-calendar server would be
+  // ceremony with nothing behind it.
+  // Read once and shared with registerWakeTool below: the gate decision and the
+  // wake tool's own registration must never come from two different reads.
+  const disabledTools = parseDisabledTools(env.DISABLED_TOOLS ?? "");
+  const gate = wakeGateFor(server, env, disabledTools);
+  // Everything below registers through `target`, so the gate collects a handle
+  // for each tool. `wake_betty` itself goes on the bare server.
+  const target = gate ? gate.wrap(server) : server;
+
   // Email — activates when EMAIL_BACKEND, JMAP_TOKEN, or IMAP_HOST is set
   const email = createEmailBackend(env);
-  if (email) registerEmailTools(server, email);
+  if (email) registerEmailTools(target, email);
 
   // CalDAV — activates when CALDAV_URL is set
   let calendar: CalDavBackend | null = null;
@@ -200,8 +224,8 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     });
     // Resolved here, at the composition root, so tool handlers never touch env.
     const defaultCalendar = env.CALDAV_DEFAULT_CALENDAR?.trim() || undefined;
-    registerCalendarTools(server, calendar, { defaultCalendar });
-    registerTaskTools(server, calendar, { defaultCalendar });
+    registerCalendarTools(target, calendar, { defaultCalendar });
+    registerTaskTools(target, calendar, { defaultCalendar });
   }
 
   // Contacts — CardDAV when CARDDAV_URL is set, otherwise JMAP contacts when using JMAP backend
@@ -220,13 +244,13 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
       username,
       password,
     });
-    registerContactTools(server, contacts, { defaultAddressBook });
+    registerContactTools(target, contacts, { defaultAddressBook });
   } else if (email instanceof JmapBackend) {
     // JMAP contacts activate automatically — no extra config needed. They ride
     // on the email backend's session, so they need JMAP email to be configured;
     // CARDDAV_URL is the way to get contacts without it.
     contacts = new JmapContactsBackend(email);
-    registerContactTools(server, contacts, { defaultAddressBook });
+    registerContactTools(target, contacts, { defaultAddressBook });
   }
 
   // Notes, memory, and skills — activate when NOTES_BACKEND is set
@@ -279,7 +303,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     };
 
     notes = createNotesBackend(env, env.NOTES_BACKEND, notesRoot);
-    registerNotesTools(server, notes, {
+    registerNotesTools(target, notes, {
       notesRoot,
       memoryPrefix: roots.MEMORY_ROOT,
       deskPrefix: roots.DESK_ROOT,
@@ -287,7 +311,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
       writeLog: env.MEMORY_LOG !== "false",
       writeUnfiled: env.MEMORY_UNFILED !== "false",
     });
-    registerSkillsTools(server, notes, { skillsPrefix: roots.SKILLS_ROOT });
+    registerSkillsTools(target, notes, { skillsPrefix: roots.SKILLS_ROOT });
   }
 
   // Now that email is optional, "nothing configured" is reachable for the first
@@ -302,7 +326,85 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     );
   }
 
-  return { email, calendar, contacts, notes, notesPaths };
+  // Close the gate now, before the transport connects, so the client's very
+  // first tools/list already shows nothing but wake_betty. `notes` is always
+  // set when the gate is — wakeGateFor only returns one for NOTES_BACKEND — but
+  // the check is what tells the compiler that too.
+  if (gate && notes && notesPaths) {
+    // Bound to consts so the narrowing survives into the closure below.
+    const notesBackend = notes;
+    const paths = notesPaths;
+    gate.arm();
+    registerWakeTool(server, {
+      gate,
+      capabilities: describeCapabilities({ email, calendar, contacts }),
+      instructions: () => readWakeInstructions(notesBackend, paths),
+      disabled: disabledTools,
+    });
+  }
+
+  return { email, calendar, contacts, notes, notesPaths, gate: gate ?? undefined };
+}
+
+/**
+ * The wake gate, or null when it should not be armed.
+ *
+ * Three ways to turn it off, and the last two matter: `BETTY_WAKE_GATE=false`
+ * for a user whose client does not act on `tools/list_changed`,
+ * `DISABLED_TOOLS=wake_betty` because a gate whose only key is disabled would
+ * strand every other tool, and no `NOTES_BACKEND` because there would be
+ * nothing to wake into.
+ */
+function wakeGateFor(
+  server: McpServer,
+  env: NodeJS.ProcessEnv,
+  disabledTools: Set<string>
+): ToolGate | null {
+  if (!env.NOTES_BACKEND) return null;
+  if (env.BETTY_WAKE_GATE === "false") return null;
+  if (!toolEnabled(WAKE_TOOL, disabledTools)) return null;
+  // parseRearmMs throws on a malformed value — a startup error, rather than a
+  // gate that silently never re-arms.
+  return new ToolGate(server, { rearmMs: parseRearmMs(env.BETTY_WAKE_REARM_MINUTES) });
+}
+
+/**
+ * What `wake_betty` says is behind it. Memory and skills are always there — the
+ * gate only exists when NOTES_BACKEND is set — and the rest is named only when
+ * configured, so the description never advertises a tool that isn't registered.
+ */
+function describeCapabilities(backends: {
+  email: EmailBackend | null;
+  calendar: CalDavBackend | null;
+  contacts: ContactsBackend | null;
+}): string[] {
+  const capabilities = ["memory", "skills"];
+  if (backends.email) capabilities.push("mail");
+  if (backends.calendar) capabilities.push("calendar", "tasks");
+  if (backends.contacts) capabilities.push("contacts");
+  return capabilities;
+}
+
+/**
+ * The body of the user's own wake-betty skill, falling back to the bundled text
+ * when it isn't there (seeding turned off, or they deleted it).
+ *
+ * Reading the user's copy rather than the template is the point: whatever they
+ * have edited it into is Betty's boot prompt, and it travels with them.
+ */
+export async function readWakeInstructions(
+  notes: NotesBackend,
+  paths: NotesPaths
+): Promise<string> {
+  const path = `${paths.skillsPrefix}/${WAKE_BETTY_SKILL}/SKILL.md`;
+  try {
+    return parseNote((await notes.read(path)).text).body;
+  } catch (err) {
+    if (!(err instanceof NoteNotFoundError)) throw err;
+    // The bundled text still names the roots this server is actually running
+    // with, so it is a real fallback rather than a generic apology.
+    return parseNote(wakeBettySkill(paths)).body;
+  }
 }
 
 /** Build a real McpServer with every configured capability registered on it. */
@@ -325,6 +427,9 @@ export async function connectAll(backends: Backends): Promise<void> {
   if (backends.email) await backends.email.connect();
   if (backends.calendar) await backends.calendar.connect();
   if (backends.contacts) await backends.contacts.connect();
+  // The gate's idle timer starts here rather than at registration, so
+  // server.test.ts never leaves one running.
+  backends.gate?.startSweeping();
   if (backends.notes) {
     await backends.notes.connect();
     if (backends.notesPaths) await seedBundledSkills(backends.notes, backends.notesPaths);

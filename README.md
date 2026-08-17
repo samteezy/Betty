@@ -145,13 +145,17 @@ Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely,
 
 ### Telling Betty when to remember
 
-Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both. A line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — is usually all it takes:
+Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both.
 
-> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_memory` it under `betty/memory/`.
+By default [the wake gate](#the-wake-gate) handles this for you: `wake_betty` is the only tool a client sees until it's called, and calling it hands the model your [wake-betty](#wake-betty--the-default) skill before it can touch anything else. No client-side configuration, on any platform.
 
-Better still, point it at the [wake-betty](#wake-betty--the-default) skill Betty ships with, so the substance lives in your storage and travels between platforms, leaving the client-side config a one-liner:
+With the gate turned off (`BETTY_WAKE_GATE=false`), you need a line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — to do the same job:
 
 > If I mention Betty, `load_skill` **wake-betty** first.
+
+Or, if you'd rather not depend on the skill at all:
+
+> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_memory` it under `betty/memory/`.
 
 ### The two skills Betty ships with
 
@@ -159,11 +163,13 @@ Both are installed the first time she connects, and never touched again.
 
 #### wake-betty — the default
 
-This is what your one-line client rule should point at:
+This is what `wake_betty` hands back, and what your one-line client rule should point at if you've turned [the wake gate](#the-wake-gate) off:
 
 > If I mention Betty, `load_skill` **wake-betty** first.
 
-It tells the model who Betty is, that the first move is to *search before answering*, where memory lives, what is worth recording, and — importantly — what she refuses to do, so it expects the refusal instead of working around it. Keeping it in a skill rather than in your client config is the whole point: the substance lives in your storage and travels with you, and the config stays a single line on every platform.
+It tells the model who Betty is, that the first move is to *search before answering*, where memory lives, what is worth recording, and — importantly — what she refuses to do, so it expects the refusal instead of working around it. Keeping it in a skill rather than in your client config is the whole point: the substance lives in your storage and travels with you, and the config stays a single line on every platform — or no line at all, with the gate on.
+
+`wake_betty` reads *your* copy of the file, not the bundled template. Edit it and you have edited Betty's boot prompt.
 
 #### organize-desk — the maintenance pass
 
@@ -416,6 +422,8 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 | `MEMORY_LOG` | No | Append a change-history line to `<DESK_ROOT>/log.md` (default: `true`) |
 | `MEMORY_UNFILED` | No | Append a line to `<DESK_ROOT>/unfiled.md` when a memory is created or moved (default: `true`) |
 | `BETTY_SEED_SKILLS` | No | Install the bundled `wake-betty` and `organize-desk` skills if they aren't already there (default: `true`) |
+| `BETTY_WAKE_GATE` | No | Hide every tool behind `wake_betty` until it is called — see [The wake gate](#the-wake-gate) (default: `true`) |
+| `BETTY_WAKE_REARM_MINUTES` | No | Close the gate again after this many minutes with no tool call. `0` leaves it open for the life of the process (default: `10`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
 | `WEBDAV_PASSWORD` | When `NOTES_BACKEND=webdav` | HTTP Basic auth password |
@@ -476,6 +484,28 @@ SKILLS_ROOT=/Users/you/Notes/betty/skills
 `DESK_ROOT` and `TRASH_ROOT` follow the same rules and default to `betty/desk` and `betty/trash`; set them only if you want Betty's paperwork somewhere else.
 
 For what Betty actually does with these directories — the file format, `index.md`, the desk, and how skills load — see [Memory](#memory) and [Skills](#skills).
+
+### The wake gate
+
+Betty starts asleep. Her tools are registered but hidden, and a client's first `tools/list` returns exactly one:
+
+```
+wake_betty — Load Betty's instructions and bring her tools online: memory,
+             skills, mail, calendar, tasks and contacts. …
+```
+
+Calling it hands back your own [wake-betty](#wake-betty--the-default) skill and reveals the rest. Two things this buys:
+
+- **Betty carries her own bootstrap.** Without the gate, the wake-betty skill only loads if you write a client-side rule for it — the one part of Betty that has to be re-done on every platform you use her from. A visible tool whose description is the trigger travels with her.
+- **~104 tokens instead of ~2,062.** A full configuration's tool schemas ride in the context window of every request, whether or not Betty comes up. Asleep, she costs one small tool definition.
+
+**It re-arms.** MCP has no concept of a conversation — the server sees one connection and then an undifferentiated stream of calls — so a gate that only opened once would stay open for the life of the process. On Claude Code that's your session; on a host that keeps one server running across chats, it's until you quit the app. `BETTY_WAKE_REARM_MINUTES` closes it again after a quiet stretch, so the next chat, or the next hour of unrelated work, starts asleep. Default 10 minutes; `0` disables it.
+
+Recovering from a re-arm mid-conversation is deliberately cheap: the model calls `wake_betty` with `loaded: true`, which brings the tools back without re-sending instructions it already has.
+
+**Turn it off with `BETTY_WAKE_GATE=false`** if your client doesn't act on `notifications/tools/list_changed` — waking works by telling the client the tool list changed, and a client that never refetches will see one tool forever. Claude Code and Claude Desktop both refetch. `DISABLED_TOOLS=wake_betty` turns the gate off too, since a gate with no key would strand every other tool.
+
+The gate requires `NOTES_BACKEND`. With no memory layer configured there is no skill to wake into, so a mail-and-calendar-only server is never gated.
 
 ### Disabling tools
 
@@ -618,6 +648,14 @@ If you have a mail credential in your environment for other reasons and want ema
 
 ## Tools
 
+### Waking (WebDAV or local)
+
+| Tool | Description |
+|------|-------------|
+| `wake_betty` | Hand back the `wake-betty` skill and bring every other tool online. Pass `loaded: true` to re-enable them without re-sending instructions the model already has |
+
+The only tool visible until it's called. Registered whenever `NOTES_BACKEND` is set, unless `BETTY_WAKE_GATE=false` — see [The wake gate](#the-wake-gate).
+
 ### Email
 
 | Tool | Description |
@@ -702,10 +740,13 @@ Tools are only registered when the matching backend is configured. Combine rows 
 | CardDAV | 4 | ~206 |
 | Notes & memory | 5 | ~587 |
 | Skills | 4 | ~316 |
+| **Asleep** (any of the above, gate on) | **1** | **~104** |
 
 Notes and skills register together on `NOTES_BACKEND`, so those two rows come as a pair unless you trim them with `DISABLED_TOOLS`.
 
 **Example totals:** IMAP only ~373 · Notes + Skills only ~903 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,477 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~2,062
+
+Those are the *awake* numbers. With [the wake gate](#the-wake-gate) on — the default whenever `NOTES_BACKEND` is set — every one of them is ~104 until something calls `wake_betty`, and drops back after `BETTY_WAKE_REARM_MINUTES` of quiet.
 
 Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
 

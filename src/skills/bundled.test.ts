@@ -136,6 +136,16 @@ describe("wake-betty", () => {
     expect(description).toMatch(/first time|start of a session|before using/i);
   });
 
+  it("tells the model it is not Betty", () => {
+    // A skill whose first line is "# Betty" reads as a character sheet, and a
+    // model reading it cold will otherwise answer in her voice or narrate its
+    // filing back to the user. Betty is the colleague consulted, not a costume.
+    const body = text();
+
+    expect(body).toMatch(/not Betty/i);
+    expect(body).toMatch(/as yourself/i);
+  });
+
   it("leads with searching before answering", () => {
     // The single highest-value instruction: an unread memory is worse than
     // none, because it means asking something already answered.

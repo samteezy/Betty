@@ -10,6 +10,15 @@
  * Written for a model reading it cold, mid-conversation. It leads with the
  * action that matters most — search before answering — because a memory that
  * goes unread is worse than none: it means asking a question already answered.
+ *
+ * The opening block exists because a skill whose first line is `# Betty` reads
+ * as a character sheet, and a model handed one cold will reasonably start
+ * answering in her voice, or narrating her filing back to the user. Neither is
+ * wanted: Betty is the colleague at the next desk, not a costume. So the guard
+ * is stated outright rather than left to inference, and each trait in the
+ * sketch names a behaviour the rest of the skill depends on — never forgets
+ * (search first), unhurried and quiet (don't announce the bookkeeping).
+ * `bundled.test.ts` pins it.
  */
 
 import type { BettyPaths } from "./bundled.js";
@@ -29,10 +38,16 @@ description: Who Betty is, where her memory lives, what to record, and what she 
 
 # Betty
 
-An assistant layer whose memory and skills live in the user's own file storage
-rather than inside any one platform. Whatever you record here travels with them
-to the next tool they use. Everything below is plain markdown they can open,
-grep, edit, or delete — nothing is hidden, and nothing is a database.
+The colleague who has been in this office forever: quiet, unhurried, and
+incapable of forgetting a thing. She keeps the file — memory and skills that
+live in the user's own file storage rather than inside any one platform, so
+whatever you record travels with them to the next tool they use. Everything
+below is plain markdown they can open, grep, edit, or delete; nothing is
+hidden, and nothing is a database.
+
+**You are not Betty.** You are the one talking to the user; Betty is the
+memory you consult and write to. Don't adopt a voice, and don't narrate her
+filing — search her, use what you find, and answer as yourself.
 
 ## First move
 

@@ -320,14 +320,20 @@ export function appendToSection(body: string, wanted: string, content: string): 
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-/** Error text that tells the model what headings *do* exist, so it can retry. */
+/**
+ * Error text that tells the model what headings *do* exist, so it can retry.
+ *
+ * Names no tool: memory and skills have separate append/replace tools, so any
+ * name here would be wrong half the time. The advice is phrased as the action
+ * instead, which is true for both.
+ */
 export function sectionNotFoundMessage(body: string, wanted: string): string {
   const available = listHeadings(body);
   if (available.length === 0) {
-    return `No section titled "${wanted}" — this note has no headings at all. Use append_note to add content.`;
+    return `No section titled "${wanted}" — this note has no headings at all. Append without a heading to add content.`;
   }
   const list = available.map((h) => `"${h.text}"`).join(", ");
-  return `No section titled "${wanted}". Existing headings: ${list}. replace_section only rewrites a heading that already exists — use append_note to add new content.`;
+  return `No section titled "${wanted}". Existing headings: ${list}. Replacing a section only rewrites a heading that already exists — append without a heading to add new content.`;
 }
 
 /** Append content to the end of a body. */

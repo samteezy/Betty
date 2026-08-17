@@ -51,6 +51,9 @@ export class MemoryNotesBackend implements NotesBackend {
   files = new Map<string, string>();
   /** Every path passed to read(), in order — for asserting what was fetched. */
   reads: string[] = [];
+  /** Every move performed, in order — so a test can assert the tool reached
+   *  the backend rather than inferring it from the file map. */
+  moves: Array<{ from: string; to: string }> = [];
   private versions = new Map<string, number>();
 
   constructor(private readonly options: MemoryNotesOptions = {}) {}
@@ -112,6 +115,17 @@ export class MemoryNotesBackend implements NotesBackend {
     }
     this.seed(path, text);
     return { etag: this.etag(path) };
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    if (this.options.readOnly) throw new Error("storage is read-only");
+    const text = this.files.get(from);
+    if (text === undefined) throw new NoteNotFoundError(from);
+    if (this.files.has(to)) throw new NoteConflictError(existsMessage(to));
+    this.moves.push({ from, to });
+    this.files.delete(from);
+    this.versions.delete(from);
+    this.seed(to, text);
   }
 }
 

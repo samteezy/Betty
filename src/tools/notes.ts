@@ -7,12 +7,11 @@ import { assertWritable, isUnderPrefix, safeRelPath } from "../notes/paths.js";
 import { isMarkdown, walkNotes } from "../notes/walk.js";
 import {
   Frontmatter,
-  SKILL_FRONTMATTER,
   appendToBody,
   appendToSection,
   buildFrontmatter,
-  buildSkillFrontmatter,
   extractLinks,
+  findSection,
   listHeadings,
   logLine,
   parseNote,
@@ -28,15 +27,20 @@ import {
 export interface NotesToolConfig {
   /** The configured notes root, for error messages only. */
   notesRoot: string;
-  /** Memory root, relative to the notes root. Writable, and where log.md lives. */
+  /** Memory root, relative to the notes root. Writable, and searched. */
   memoryPrefix: string;
   /**
-   * Skills root, relative to the notes root. Also writable, so Betty can author
-   * and revise her own skills. Omit to keep the write scope to memory alone.
+   * Desk root, relative to the notes root. Writable, and pruned from search:
+   * this is where log.md and unfiled.md live, and Betty's bookkeeping has no
+   * business competing with real memories in a recall query.
    */
-  skillsPrefix?: string;
-  /** Append a change-history line to <memoryPrefix>/log.md. Default true. */
+  deskPrefix: string;
+  /** Trash root, relative to the notes root. Writable, and pruned from search. */
+  trashPrefix: string;
+  /** Append a change-history line to <deskPrefix>/log.md. Default true. */
   writeLog?: boolean;
+  /** Append a line to <deskPrefix>/unfiled.md. Default true. */
+  writeUnfiled?: boolean;
   /** Cap on files read during a content search. Default 100. */
   maxContentFiles?: number;
   /** Injectable clock, so tests get deterministic timestamps. */
@@ -45,6 +49,8 @@ export interface NotesToolConfig {
 
 const DEFAULT_MAX_CONTENT_FILES = 100;
 const SNIPPET_RADIUS = 90;
+/** The heading organize-desk drains with replace_memory_section. */
+const UNFILED_SECTION = "Unprocessed";
 
 type MatchKind = "index" | "frontmatter" | "path" | "body";
 
@@ -114,27 +120,10 @@ function titleFromPath(path: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-const SKILL_FILE_RE = /(^|\/)SKILL\.mdx?$/i;
-
-/**
- * A skill is a folder holding a SKILL.md, so the skill's identity comes from
- * that folder — "skills/inbox-triage/SKILL.md" is the "inbox-triage" skill.
- * Deriving it from the filename would name every skill "SKILL".
- *
- * `list_skills` enumerates exactly one level below the skills root, so a
- * SKILL.md sitting at the root itself, or buried deeper, can never load.
- * Return null for those rather than invent a name for a file nothing will find.
- */
-function skillFolderName(path: string, skillsPrefix: string): string | null {
-  const segments = path.slice(skillsPrefix.length + 1).split("/");
-  if (segments.length !== 2) return null;
-  return segments[0] || null;
-}
-
 /** Memory files are markdown. Add the extension, but never silently accept another. */
-function normalizeNotePath(input: string): string {
-  const rel = safeRelPath(input, "path");
-  if (!rel) throw new Error("path must name a file, not the root directory");
+function normalizeNotePath(input: string, label = "path"): string {
+  const rel = safeRelPath(input, label);
+  if (!rel) throw new Error(`${label} must name a file, not the root directory`);
   const name = rel.split("/").pop() ?? rel;
   if (/\.mdx?$/i.test(name)) return rel;
   if (name.includes(".")) {
@@ -158,111 +147,58 @@ export function registerNotesTools(
   config: NotesToolConfig
 ): void {
   const disabled = parseDisabledTools();
-  const memoryPrefix = config.memoryPrefix;
-  const skillsPrefix = config.skillsPrefix;
-  // Betty's own roots, and the whole of what she may write to. Everything else
-  // under the notes root is the user's: readable, never writable.
-  const writePrefixes = skillsPrefix ? [memoryPrefix, skillsPrefix] : [memoryPrefix];
+  const { memoryPrefix, deskPrefix, trashPrefix } = config;
+  // Betty's memory-side roots. Skills are writable too, but through
+  // registerSkillsTools — a tool named for memory should not be able to
+  // silently produce a skill.
+  const writePrefixes = [memoryPrefix, deskPrefix, trashPrefix];
+  // Bookkeeping never appears in a recall query. This is the invariant that
+  // lets automatic writes exist at all: everything code writes lands in the
+  // desk, and search never looks there.
+  const searchExclusions = [deskPrefix, trashPrefix];
   const writeLog = config.writeLog ?? true;
+  const writeUnfiled = config.writeUnfiled ?? true;
   const maxContentFiles = config.maxContentFiles ?? DEFAULT_MAX_CONTENT_FILES;
   const now = config.now ?? (() => new Date());
   const stamp = () => now().toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  /**
-   * Serialize a file Betty is creating from scratch.
-   *
-   * Two shapes, and picking the wrong one is silent: a `SKILL.md` under the
-   * skills root is a skill manifest that `list_skills` reads for `name` and
-   * `description`, so giving it OKF's `title`/`type` block would produce a
-   * skill that looks written and never loads. Everything else is an OKF note.
-   */
+  const logPath = `${deskPrefix}/log.md`;
+  const unfiledPath = `${deskPrefix}/unfiled.md`;
+
+  /** Serialize a memory Betty is creating from scratch. Always OKF. */
   function newFileText(
     rel: string,
-    opts: {
-      content: string;
-      heading?: string;
-      title?: string;
-      description?: string;
-      type?: string;
-    }
-  ): string {
-    const withHeading = (docTitle: string) =>
-      opts.heading
-        ? `# ${docTitle}\n\n## ${opts.heading}\n\n${opts.content.trim()}\n`
-        : `# ${docTitle}\n\n${opts.content.trim()}\n`;
-
-    const isSkill =
-      !!skillsPrefix && isUnderPrefix(skillsPrefix, rel) && SKILL_FILE_RE.test(rel);
-
-    if (isSkill) {
-      const folder = skillFolderName(rel, skillsPrefix);
-      if (!folder) {
-        throw new Error(
-          `A skill needs its own folder, exactly one level under the skills root — write "${skillsPrefix}/<skill-name>/SKILL.md". list_skills does not look any deeper, or at the root itself.`
-        );
-      }
-      const name = opts.title?.trim() || folder;
-      if (!opts.description?.trim()) {
-        throw new Error(
-          "A new SKILL.md needs a description — it is the only thing list_skills shows, and how the model decides whether to load the skill."
-        );
-      }
-      const frontmatter = buildSkillFrontmatter({
-        name,
-        description: opts.description.trim(),
-        timestamp: stamp(),
-      });
-      return serializeNote(frontmatter, withHeading(name), SKILL_FRONTMATTER);
-    }
-
-    const noteTitle = opts.title ?? titleFromPath(rel);
+    opts: { content: string; heading?: string; title?: string; description?: string; type?: string }
+  ): { text: string; title: string } {
+    const title = opts.title?.trim() || titleFromPath(rel);
+    const body = opts.heading
+      ? `# ${title}\n\n## ${opts.heading}\n\n${opts.content.trim()}\n`
+      : `# ${title}\n\n${opts.content.trim()}\n`;
     const frontmatter = buildFrontmatter({
-      title: noteTitle,
+      title,
       description: opts.description,
       type: opts.type,
       timestamp: stamp(),
     });
-    return serializeNote(frontmatter, withHeading(noteTitle));
+    return { text: serializeNote(frontmatter, body), title };
   }
 
   /**
-   * Record a change in <memoryPrefix>/log.md. Best-effort by design: the note
-   * write has already succeeded by this point, so a failure here is reported
+   * Run a desk write that must never fail the memory write that triggered it.
+   * By this point the memory is already saved, so a failure here is reported
    * alongside the success rather than masquerading as a failed write.
+   *
+   * One retry, because the desk now has two writers by design — this code and
+   * the organize-desk skill — so losing an etag race is routine, not exotic.
    */
-  async function appendLog(action: string, path: string, detail?: string): Promise<string | undefined> {
-    if (!writeLog) return undefined;
-    const logPath = `${memoryPrefix}/log.md`;
-    const line = logLine(stamp(), action, path, detail);
-
+  async function bestEffort(what: string, op: () => Promise<void>): Promise<string | undefined> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const existing = await backend.read(logPath).catch((err) => {
-          if (err instanceof NoteNotFoundError) return null;
-          throw err;
-        });
-
-        if (existing === null) {
-          const frontmatter = buildFrontmatter({
-            title: "Change log",
-            description: "Chronological record of changes Betty made to memory.",
-            type: "log",
-            timestamp: stamp(),
-          });
-          await backend.write(logPath, serializeNote(frontmatter, `# Change log\n\n${line}\n`));
-          return undefined;
-        }
-
-        const parsed = parseNote(existing.text);
-        await backend.write(
-          logPath,
-          parsed.raw + appendToBody(parsed.body, line),
-          existing.etag
-        );
+        await op();
         return undefined;
       } catch (err) {
         if (attempt === 1) {
-          return `Note saved, but the change log could not be updated: ${
+          return `Note saved, but ${what} could not be updated: ${
             err instanceof Error ? err.message : String(err)
           }`;
         }
@@ -271,10 +207,89 @@ export function registerNotesTools(
     return undefined;
   }
 
+  /**
+   * Append a line to a desk file, creating it with OKF frontmatter if absent.
+   * Links are root-relative: desk files are pruned from search, so resolveLink
+   * never touches them, and a root-relative path is the unambiguous form for
+   * the organize-desk skill to act on.
+   */
+  async function appendDeskLine(
+    path: string,
+    line: string,
+    fresh: { title: string; description: string; section?: string }
+  ): Promise<void> {
+    const existing = await backend.read(path).catch((err) => {
+      if (err instanceof NoteNotFoundError) return null;
+      throw err;
+    });
+
+    if (existing === null) {
+      const frontmatter = buildFrontmatter({
+        title: fresh.title,
+        description: fresh.description,
+        type: "log",
+        timestamp: stamp(),
+      });
+      const body = fresh.section
+        ? `# ${fresh.title}\n\n## ${fresh.section}\n\n${line}\n`
+        : `# ${fresh.title}\n\n${line}\n`;
+      await backend.write(path, serializeNote(frontmatter, body));
+      return;
+    }
+
+    const parsed = parseNote(existing.text);
+    // appendToSection throws when the heading is missing, which would turn a
+    // hand-edited desk file into a warning on every single write. Probe first
+    // and re-add the heading instead; the next write then finds it.
+    const body =
+      fresh.section && findSection(parsed.body, fresh.section)
+        ? appendToSection(parsed.body, fresh.section, line)
+        : fresh.section
+          ? appendToBody(parsed.body, `## ${fresh.section}\n\n${line}`)
+          : appendToBody(parsed.body, line);
+    await backend.write(path, parsed.raw + body, existing.etag);
+  }
+
+  /** Record a change in <deskPrefix>/log.md. */
+  async function appendLog(action: string, path: string, detail?: string): Promise<string | undefined> {
+    if (!writeLog) return undefined;
+    const line = logLine(stamp(), action, path, detail);
+    return bestEffort("the change log", () =>
+      appendDeskLine(logPath, line, {
+        title: "Change log",
+        description: "Chronological record of changes Betty made to memory.",
+      })
+    );
+  }
+
+  /**
+   * Record a memory as not yet filed, in <deskPrefix>/unfiled.md. Creations
+   * land here so organize-desk knows to file them under a category in the
+   * memory index; moves land here because a moved memory leaves a stale link
+   * behind in that index, and this is how the skill learns to reconcile it.
+   *
+   * Deliberately not called an inbox: Betty also does email, and "inbox" there
+   * means the mail inbox to every user and every model. "Unfiled" names the
+   * state instead, and pairs with index.md — unfiled is what isn't in it yet.
+   */
+  async function appendUnfiled(action: string, path: string, detail?: string): Promise<string | undefined> {
+    // Bookkeeping does not queue itself for triage.
+    if (!writeUnfiled) return undefined;
+    if (isUnderPrefix(deskPrefix, path) || isUnderPrefix(trashPrefix, path)) return undefined;
+    const line = logLine(stamp(), action, path, detail);
+    return bestEffort("the unfiled list", () =>
+      appendDeskLine(unfiledPath, line, {
+        title: "Unfiled",
+        description: "Memories not yet filed into the memory index by organize-desk.",
+        section: UNFILED_SECTION,
+      })
+    );
+  }
+
   if (toolEnabled("search_notes", disabled)) {
     server.tool(
       "search_notes",
-      "Search notes by text. Reads index.md files and matches filenames by default; pass content: true to also search inside note bodies and frontmatter (slower, reads each file).",
+      "Search notes by text. Reads index.md files and matches filenames by default; pass content: true to also search inside note bodies and frontmatter (slower, reads each file). Betty's desk and trash folders are skipped unless dir points into them.",
       {
         query: z.string().describe("Text to search for. All whitespace-separated terms must match."),
         dir: z
@@ -304,7 +319,7 @@ export function registerNotesTools(
           const root = safeRelPath(dir ?? "", "dir");
           const max = limit ?? 20;
 
-          const walked = await walkNotes(backend, root);
+          const walked = await walkNotes(backend, root, { exclude: searchExclusions });
           const markdown = walked.files.filter(isMarkdown);
           const hits = new Map<string, SearchHit>();
           const matches = makeMatcher(query);
@@ -318,8 +333,11 @@ export function registerNotesTools(
             }
           };
 
-          // 1. Index-first. index.md files are curated by the user, so a hit
-          //    here is a better answer than a filename that happens to match.
+          // 1. Index-first. index.md files are curated — by the user for their
+          //    own notes, by the organize-desk skill for Betty's memory — so a
+          //    hit here is a better answer than a filename that happens to
+          //    match. Nothing in code writes an index, which is what keeps this
+          //    ranking honest.
           const indexes = markdown.filter((f) => /^index\.mdx?$/i.test(f.name));
           for (const index of indexes) {
             let text: string;
@@ -418,7 +436,7 @@ export function registerNotesTools(
   if (toolEnabled("get_note", disabled)) {
     server.tool(
       "get_note",
-      "Read a single note by path, returning its body, frontmatter title/type, and the list of headings available to replace_section.",
+      "Read a single note by path, returning its body, frontmatter title/type, and the list of headings available to replace_memory_section. Reads anywhere under the notes root, including Betty's desk and trash.",
       {
         path: z.string().describe("Path to the note, relative to the notes root"),
         verbose: z
@@ -458,15 +476,15 @@ export function registerNotesTools(
     );
   }
 
-  if (toolEnabled("append_note", disabled)) {
+  if (toolEnabled("append_memory", disabled)) {
     server.tool(
-      "append_note",
-      "Append content to a note, creating it with Open Knowledge Format frontmatter if it does not exist. Writes are restricted to Betty's own memory and skills directories; the rest of the notes root is readable but not writable.",
+      "append_memory",
+      `Append content to a memory, creating it with Open Knowledge Format frontmatter if it does not exist. Writes are restricted to Betty's memory ("${memoryPrefix}/"), desk ("${deskPrefix}/"), and trash; the rest of the notes root is readable but not writable. Use append_skill for skills.`,
       {
         path: z
           .string()
           .describe(
-            "Path to the note, relative to the notes root. Must be inside the memory root, or the skills root for a SKILL.md."
+            `Path to the memory, relative to the notes root. Must be inside "${memoryPrefix}/", "${deskPrefix}/", or "${trashPrefix}/".`
           ),
         content: z.string().describe("Markdown content to append"),
         heading: z
@@ -476,19 +494,15 @@ export function registerNotesTools(
         title: z
           .string()
           .optional()
-          .describe(
-            "Title for a note being created (defaults to a title derived from the filename). For a new SKILL.md this becomes the skill's name, defaulting to its folder name."
-          ),
+          .describe("Title for a memory being created (defaults to a title derived from the filename)"),
         description: z
           .string()
           .optional()
-          .describe(
-            "One-line description for a note being created. Required when creating a SKILL.md — it is what list_skills shows."
-          ),
+          .describe("One-line description for a memory being created"),
         type: z
           .string()
           .optional()
-          .describe("Open Knowledge Format type for a note being created (default: note)"),
+          .describe("Open Knowledge Format type for a memory being created (default: note)"),
       },
       async ({ path, content, heading, title, description, type }) => {
         try {
@@ -501,10 +515,13 @@ export function registerNotesTools(
           });
 
           let text: string;
+          let docTitle: string;
           let created: boolean;
 
           if (existing === null) {
-            text = newFileText(rel, { content, heading, title, description, type });
+            const fresh = newFileText(rel, { content, heading, title, description, type });
+            text = fresh.text;
+            docTitle = fresh.title;
             await backend.write(rel, text);
             created = true;
           } else {
@@ -513,14 +530,22 @@ export function registerNotesTools(
               ? appendToSection(parsed.body, heading, content)
               : appendToBody(parsed.body, content);
             text = parsed.raw + body;
+            docTitle = asString(parsed.frontmatter.title) ?? titleFromPath(rel);
             await backend.write(rel, text, existing.etag);
             created = false;
           }
 
-          const warning = await appendLog(created ? "create" : "append", rel, heading);
+          const warnings: string[] = [];
+          const logWarning = await appendLog(created ? "create" : "append", rel, heading);
+          if (logWarning) warnings.push(logWarning);
+          if (created) {
+            const unfiledWarning = await appendUnfiled("create", rel, docTitle);
+            if (unfiledWarning) warnings.push(unfiledWarning);
+          }
+
           const payload: Record<string, unknown> = { path: rel, created, bytes: text.length };
           if (heading) payload.heading = heading;
-          if (warning) payload.warning = warning;
+          if (warnings.length > 0) payload.warning = warnings.join(" ");
           return jsonResult(payload);
         } catch (err) {
           return errorResult(err);
@@ -529,16 +554,14 @@ export function registerNotesTools(
     );
   }
 
-  if (toolEnabled("replace_section", disabled)) {
+  if (toolEnabled("replace_memory_section", disabled)) {
     server.tool(
-      "replace_section",
-      "Replace the content under an existing heading in a note, leaving the rest of the file untouched. The heading must already exist — use append_note to add new content. Writes are restricted to Betty's own memory and skills directories.",
+      "replace_memory_section",
+      "Replace the content under an existing heading in a memory, leaving the rest of the file untouched. The heading must already exist — use append_memory to add new content. Writes are restricted to Betty's memory, desk, and trash.",
       {
         path: z
           .string()
-          .describe(
-            "Path to the note, relative to the notes root. Must be inside the memory root, or the skills root."
-          ),
+          .describe(`Path to the memory, relative to the notes root. Must be inside "${memoryPrefix}/", "${deskPrefix}/", or "${trashPrefix}/".`),
         heading: z
           .string()
           .describe(
@@ -573,13 +596,58 @@ export function registerNotesTools(
       }
     );
   }
+
+  if (toolEnabled("move_memory", disabled)) {
+    server.tool(
+      "move_memory",
+      `Move or rename a memory. Refuses to overwrite — the destination must not already exist. There is no delete: retire a memory by moving it under "${trashPrefix}/", where it stops appearing in searches but stays readable by path.`,
+      {
+        from: z.string().describe("Current path of the memory, relative to the notes root"),
+        to: z
+          .string()
+          .describe(
+            `New path, relative to the notes root. Must not already exist, and must be inside "${memoryPrefix}/", "${deskPrefix}/", or "${trashPrefix}/".`
+          ),
+      },
+      async ({ from, to }) => {
+        try {
+          const src = normalizeNotePath(from, "from");
+          const dst = normalizeNotePath(to, "to");
+          // Both ends, always. Guarding only the source would let a memory be
+          // moved out into the user's own vault; guarding only the destination
+          // would let one of the user's notes be relocated in. Either is a
+          // write outside Betty's roots.
+          assertWritable(writePrefixes, src);
+          assertWritable(writePrefixes, dst);
+          if (src === dst) {
+            throw new Error(`"${src}" is already where it is — nothing to move.`);
+          }
+
+          await backend.move(src, dst);
+
+          const warnings: string[] = [];
+          // Log the destination: the log's markdown link should point at a file
+          // that still exists.
+          const logWarning = await appendLog("move", dst, `from ${src}`);
+          if (logWarning) warnings.push(logWarning);
+          const unfiledWarning = await appendUnfiled("move", dst, `moved from ${src}`);
+          if (unfiledWarning) warnings.push(unfiledWarning);
+
+          const payload: Record<string, unknown> = { from: src, to: dst, moved: true };
+          if (warnings.length > 0) payload.warning = warnings.join(" ");
+          return jsonResult(payload);
+        } catch (err) {
+          return errorResult(err);
+        }
+      }
+    );
+  }
 }
 
 /** Exported for tests. */
 export const __testables = {
   normalizeNotePath,
   titleFromPath,
-  skillFolderName,
   makeMatcher,
   resolveLink,
   snippetAround,

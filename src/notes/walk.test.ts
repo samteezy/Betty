@@ -13,6 +13,9 @@ function treeBackend(paths: string[]): NotesBackend & { listCalls: string[] } {
     async write() {
       throw new Error("not used");
     },
+    async move() {
+      throw new Error("not used");
+    },
     async list(dir: string): Promise<NoteEntry[]> {
       listCalls.push(dir);
       const prefix = dir ? `${dir}/` : "";
@@ -92,6 +95,65 @@ describe("walkNotes()", () => {
     await walkNotes(backend, "");
 
     expect(backend.listCalls).toEqual(["", "memory", "memory/sub"]);
+  });
+
+  describe("exclude", () => {
+    it("skips an excluded directory without listing it", async () => {
+      // Never listing it is the point: each directory is one PROPFIND on
+      // WebDAV, and it would also eat into maxDirectories.
+      const backend = treeBackend(["memory/sam.md", "trash/old.md", "trash/deep/older.md"]);
+
+      const result = await walkNotes(backend, "", { exclude: ["trash"] });
+
+      expect(result.files.map((f) => f.path)).toEqual(["memory/sam.md"]);
+      expect(backend.listCalls).toEqual(["", "memory"]);
+    });
+
+    it("leaves an excluded directory out of directories", async () => {
+      const backend = treeBackend(["memory/sam.md", "trash/old.md"]);
+
+      expect((await walkNotes(backend, "", { exclude: ["trash"] })).directories).toEqual(["memory"]);
+    });
+
+    it("does not report pruning as truncation", async () => {
+      // Truncation means "there is more inside the scope you asked for". An
+      // excluded directory is outside that scope by definition.
+      const backend = treeBackend(["memory/sam.md", "trash/old.md"]);
+
+      expect((await walkNotes(backend, "", { exclude: ["trash"] })).truncated).toBe(false);
+    });
+
+    it("ignores an exclusion when the walk root is the excluded directory", async () => {
+      const backend = treeBackend(["trash/old.md"]);
+
+      const result = await walkNotes(backend, "trash", { exclude: ["trash"] });
+
+      expect(result.files.map((f) => f.path)).toEqual(["trash/old.md"]);
+    });
+
+    it("ignores an exclusion when the walk root is below it", async () => {
+      const backend = treeBackend(["trash/2026/old.md"]);
+
+      const result = await walkNotes(backend, "trash/2026", { exclude: ["trash"] });
+
+      expect(result.files.map((f) => f.path)).toEqual(["trash/2026/old.md"]);
+    });
+
+    it("matches whole segments only", async () => {
+      const backend = treeBackend(["trash/old.md", "trashcan/keep.md"]);
+
+      const result = await walkNotes(backend, "", { exclude: ["trash"] });
+
+      expect(result.files.map((f) => f.path)).toEqual(["trashcan/keep.md"]);
+    });
+
+    it("walks everything when no exclusions are given", async () => {
+      const backend = treeBackend(["memory/sam.md", "trash/old.md"]);
+
+      const result = await walkNotes(backend, "", {});
+
+      expect(result.files.map((f) => f.path).sort()).toEqual(["memory/sam.md", "trash/old.md"]);
+    });
   });
 });
 

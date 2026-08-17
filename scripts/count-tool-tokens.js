@@ -76,7 +76,7 @@ const contactsBackend = {
 };
 
 const notesBackend = {
-  connect: noop, list: noopArr, read: noop, write: noop,
+  connect: noop, list: noopArr, read: noop, write: noop, move: noop,
 };
 
 // ── Token estimation ─────────────────────────────────────────────────────
@@ -117,11 +117,14 @@ registerContactTools(cardServer, contactsBackend);
 
 // Notes / memory (WebDAV or local)
 const { server: notesServer, tools: notesTools } = createCapturingServer();
-registerNotesTools(notesServer, notesBackend, { notesRoot: "/notes", memoryPrefix: "memory" });
+registerNotesTools(notesServer, notesBackend, {
+  notesRoot: "/notes", memoryPrefix: "betty/memory",
+  deskPrefix: "betty/desk", trashPrefix: "betty/trash",
+});
 
 // Skills (same storage as notes)
 const { server: skillsServer, tools: skillsTools } = createCapturingServer();
-registerSkillsTools(skillsServer, notesBackend, { skillsPrefix: "skills" });
+registerSkillsTools(skillsServer, notesBackend, { skillsPrefix: "betty/skills" });
 
 const protocols = [
   { label: "IMAP", tools: imapTools, note: "plain text" },

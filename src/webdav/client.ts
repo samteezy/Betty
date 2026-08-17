@@ -21,6 +21,35 @@ export class WebDavError extends Error {
   }
 }
 
+/**
+ * Percent-encode each path segment of an absolute URL, leaving the origin and
+ * the separators alone. encodeURI is not enough: it passes `#` and `?` through
+ * untouched, and either one truncates the path when a server parses it.
+ * Already-encoded segments are left as they are, so this is idempotent.
+ */
+function encodeUrlPath(url: string): string {
+  // Deliberately string surgery rather than `new URL`: the URL parser would
+  // itself treat a "#" in a filename as the start of a fragment and drop
+  // everything after it, which is the bug being fixed.
+  const schemeEnd = url.indexOf("://");
+  const pathStart = schemeEnd === -1 ? -1 : url.indexOf("/", schemeEnd + 3);
+  if (pathStart === -1) return url;
+
+  const segments = url.slice(pathStart).split("/");
+  const encoded = segments.map((segment) => {
+    // Decode first so an already-encoded path is not double-encoded; a
+    // malformed percent-escape isn't ours to fix, so pass it through.
+    let raw: string;
+    try {
+      raw = decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+    return encodeURIComponent(raw);
+  });
+  return url.slice(0, pathStart) + encoded.join("/");
+}
+
 export class WebDavClient {
   private config: WebDavConfig;
 
@@ -116,6 +145,31 @@ export class WebDavClient {
     }
   }
 
+  /**
+   * Move a resource. `Destination` must be a full absolute URL — RFC 4918
+   * requires it and relative forms are not portable across servers — so it goes
+   * through buildUrl(), which re-applies the same-origin guard to the
+   * destination for free.
+   *
+   * The destination goes through buildUrl() so it gets both the same-origin
+   * SSRF guard and the same path escaping as the request URL — necessary here
+   * because `Destination` is a literal header value that nothing normalizes,
+   * so a raw space would make fetch reject the request outright.
+   *
+   * Overwrite defaults to "F", so the server refuses rather than replaces.
+   * That refusal is what keeps a move non-destructive.
+   */
+  async move(
+    path: string,
+    destination: string,
+    opts: { overwrite?: boolean } = {}
+  ): Promise<void> {
+    await this.request("MOVE", path, undefined, {
+      Destination: this.buildUrl(destination),
+      Overwrite: opts.overwrite ? "T" : "F",
+    });
+  }
+
   private async request(
     method: string,
     path: string,
@@ -182,6 +236,11 @@ export class WebDavClient {
     } else {
       url = `${this.config.baseUrl}/${path}`;
     }
+    // Escape the path before anything parses it. A note called "C# tips.md" is
+    // an ordinary filename in a vault, but "#" starts a fragment and "?" starts
+    // a query — unescaped, both the URL parser below and fetch would drop
+    // everything after it and quietly address the wrong resource.
+    url = encodeUrlPath(url);
     // Prevent SSRF: never send credentials to a foreign origin
     if (new URL(url).origin !== baseOrigin) {
       throw new Error(`Refusing request to foreign origin: ${url}`);

@@ -26,12 +26,14 @@ import { registerSkillsTools } from "./tools/skills.js";
 import { WebDavClient } from "./webdav/client.js";
 import { LocalNotesBackend } from "./notes/local-backend.js";
 import { WebDavNotesBackend } from "./notes/webdav-backend.js";
-import { normalizeRoot, resolveSubRoot } from "./notes/paths.js";
+import { isUnderPrefix, normalizeRoot, resolveSubRoot } from "./notes/paths.js";
+import { NoteConflictError } from "./notes/errors.js";
+import { BUNDLED_SKILLS } from "./skills/bundled.js";
 import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.3.0";
+export const SERVER_VERSION = "0.4.0";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -41,6 +43,18 @@ export const SERVER_VERSION = "0.3.0";
  */
 const DEFAULT_MEMORY_ROOT = "betty/memory";
 const DEFAULT_SKILLS_ROOT = "betty/skills";
+const DEFAULT_DESK_ROOT = "betty/desk";
+const DEFAULT_TRASH_ROOT = "betty/trash";
+
+/** Betty's writable roots, resolved once here and passed down as config. */
+export interface NotesPaths {
+  notesRoot: string;
+  memoryPrefix: string;
+  skillsPrefix: string;
+  deskPrefix: string;
+  trashPrefix: string;
+  seedSkills: boolean;
+}
 
 /** The backends a server instance ended up with. Each is null when unconfigured. */
 export interface Backends {
@@ -48,6 +62,8 @@ export interface Backends {
   calendar: CalDavBackend | null;
   contacts: ContactsBackend | null;
   notes: NotesBackend | null;
+  /** Set whenever `notes` is — connectAll needs the roots to seed the skill. */
+  notesPaths?: NotesPaths;
 }
 
 /**
@@ -215,6 +231,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
 
   // Notes, memory, and skills — activate when NOTES_BACKEND is set
   let notes: NotesBackend | null = null;
+  let notesPaths: NotesPaths | undefined;
   if (env.NOTES_BACKEND) {
     const notesRootRaw = env.NOTES_ROOT;
     if (!notesRootRaw) {
@@ -222,37 +239,55 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     }
     const notesRoot = normalizeRoot(notesRootRaw);
 
-    // Read scope is the whole notes root; write scope is the two roots below.
-    // Both are resolved here, at the composition root, so tool handlers never
+    // Read scope is the whole notes root; write scope is the four roots below.
+    // All are resolved here, at the composition root, so tool handlers never
     // touch env.
-    const memoryPrefix = resolveSubRoot(
-      notesRoot,
-      env.MEMORY_ROOT ?? DEFAULT_MEMORY_ROOT,
-      "MEMORY_ROOT"
-    );
-    const skillsPrefix = resolveSubRoot(
-      notesRoot,
-      env.SKILLS_ROOT ?? DEFAULT_SKILLS_ROOT,
-      "SKILLS_ROOT"
-    );
+    const roots = {
+      MEMORY_ROOT: resolveSubRoot(notesRoot, env.MEMORY_ROOT ?? DEFAULT_MEMORY_ROOT, "MEMORY_ROOT"),
+      SKILLS_ROOT: resolveSubRoot(notesRoot, env.SKILLS_ROOT ?? DEFAULT_SKILLS_ROOT, "SKILLS_ROOT"),
+      DESK_ROOT: resolveSubRoot(notesRoot, env.DESK_ROOT ?? DEFAULT_DESK_ROOT, "DESK_ROOT"),
+      TRASH_ROOT: resolveSubRoot(notesRoot, env.TRASH_ROOT ?? DEFAULT_TRASH_ROOT, "TRASH_ROOT"),
+    };
 
-    // Pointing both at one directory would make list_skills enumerate memory
-    // subfolders as skills and drop log.md among them. Fail at startup rather
-    // than let that unpick itself at runtime.
-    if (memoryPrefix === skillsPrefix) {
-      throw new Error(
-        `MEMORY_ROOT and SKILLS_ROOT must be different directories (both resolved to "${memoryPrefix}")`
-      );
+    // The four roots must be disjoint, not merely distinct. Nesting is the
+    // subtler failure: MEMORY_ROOT=betty with the default SKILLS_ROOT=betty/skills
+    // resolves to two different strings, but assertWritable is a prefix check,
+    // so append_memory would then reach a SKILL.md and write OKF `title`/`type`
+    // frontmatter into it — producing a skill list_skills silently skips. The
+    // whole point of separate memory and skill tools is that this is
+    // unreachable, so enforce it here rather than discover it at runtime.
+    const entries = Object.entries(roots);
+    for (const [name, path] of entries) {
+      for (const [otherName, otherPath] of entries) {
+        if (name === otherName) continue;
+        if (!isUnderPrefix(otherPath, path)) continue;
+        throw new Error(
+          path === otherPath
+            ? `${otherName} and ${name} must be different directories (both resolved to "${path}")`
+            : `${name} ("${path}") must not sit inside ${otherName} ("${otherPath}") — Betty's roots must not overlap, or a memory write could reach a skill`
+        );
+      }
     }
+
+    notesPaths = {
+      notesRoot,
+      memoryPrefix: roots.MEMORY_ROOT,
+      skillsPrefix: roots.SKILLS_ROOT,
+      deskPrefix: roots.DESK_ROOT,
+      trashPrefix: roots.TRASH_ROOT,
+      seedSkills: env.BETTY_SEED_SKILLS !== "false",
+    };
 
     notes = createNotesBackend(env, env.NOTES_BACKEND, notesRoot);
     registerNotesTools(server, notes, {
       notesRoot,
-      memoryPrefix,
-      skillsPrefix,
+      memoryPrefix: roots.MEMORY_ROOT,
+      deskPrefix: roots.DESK_ROOT,
+      trashPrefix: roots.TRASH_ROOT,
       writeLog: env.MEMORY_LOG !== "false",
+      writeUnfiled: env.MEMORY_UNFILED !== "false",
     });
-    registerSkillsTools(server, notes, { skillsPrefix });
+    registerSkillsTools(server, notes, { skillsPrefix: roots.SKILLS_ROOT });
   }
 
   // Now that email is optional, "nothing configured" is reachable for the first
@@ -267,7 +302,7 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
     );
   }
 
-  return { email, calendar, contacts, notes };
+  return { email, calendar, contacts, notes, notesPaths };
 }
 
 /** Build a real McpServer with every configured capability registered on it. */
@@ -290,5 +325,37 @@ export async function connectAll(backends: Backends): Promise<void> {
   if (backends.email) await backends.email.connect();
   if (backends.calendar) await backends.calendar.connect();
   if (backends.contacts) await backends.contacts.connect();
-  if (backends.notes) await backends.notes.connect();
+  if (backends.notes) {
+    await backends.notes.connect();
+    if (backends.notesPaths) await seedBundledSkills(backends.notes, backends.notesPaths);
+  }
+}
+
+/**
+ * Write the bundled skills into the skills root, once each.
+ *
+ * A create-only write is the whole mechanism: it succeeds the first time and
+ * throws NoteConflictError on every start after, so the user's edits survive
+ * upgrades and there is no read to pay for. This lives in connectAll rather
+ * than registerAll because registerAll is deliberately I/O-free.
+ *
+ * Each skill is seeded independently: one that fails, or one the user has
+ * deleted on purpose and does not want back, must not stop the others.
+ */
+async function seedBundledSkills(notes: NotesBackend, paths: NotesPaths): Promise<void> {
+  if (!paths.seedSkills) return;
+  for (const skill of BUNDLED_SKILLS) {
+    const path = `${paths.skillsPrefix}/${skill.name}/SKILL.md`;
+    try {
+      await notes.write(path, skill.build(paths));
+    } catch (err) {
+      if (err instanceof NoteConflictError) continue; // already there — leave it alone
+      // Seeding a skill is a convenience, never a reason to refuse to start.
+      process.stderr.write(
+        `betty-mcp: could not install the ${skill.name} skill at ${path}: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
+  }
 }

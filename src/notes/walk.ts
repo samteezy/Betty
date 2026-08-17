@@ -8,10 +8,25 @@
  */
 
 import { NoteEntry, NotesBackend } from "../types.js";
+import { isUnderPrefix } from "./paths.js";
 
 export interface WalkOptions {
   maxDirectories?: number;
   maxDepth?: number;
+  /**
+   * Directories to skip, relative to the notes root. Pruned at the queue, so
+   * their contents are never listed at all — each directory is one PROPFIND on
+   * WebDAV and counts against maxDirectories, so filtering the results instead
+   * would let a fat trash folder push a search of live memory into `truncated`.
+   *
+   * An exclusion at or above the walk root is ignored: walking Betty's trash
+   * explicitly means you want to see it.
+   *
+   * Pruning never sets `truncated`. Truncation means "a bound was hit and there
+   * is more to find inside the scope you asked for"; an excluded directory is
+   * outside that scope by definition.
+   */
+  exclude?: readonly string[];
 }
 
 export interface WalkResult {
@@ -31,6 +46,9 @@ export async function walkNotes(
 ): Promise<WalkResult> {
   const maxDirectories = options.maxDirectories ?? DEFAULT_MAX_DIRECTORIES;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+  // Drop exclusions sitting at or above the root, so an explicitly scoped walk
+  // into an excluded directory still returns its contents.
+  const exclude = (options.exclude ?? []).filter((p) => p && !isUnderPrefix(p, root));
 
   const files: NoteEntry[] = [];
   const directories: string[] = [];
@@ -51,6 +69,9 @@ export async function walkNotes(
     const entries = await backend.list(current.path);
     for (const entry of entries) {
       if (entry.isDirectory) {
+        // Absent from `directories` too — that list reports what the walk
+        // found, and naming one it deliberately never entered would mislead.
+        if (exclude.some((p) => isUnderPrefix(p, entry.path))) continue;
         directories.push(entry.path);
         if (current.depth + 1 > maxDepth) {
           truncated = true;

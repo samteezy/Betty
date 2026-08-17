@@ -6,8 +6,10 @@ import { withEnv } from "../test-support/env";
 const CONFIG: NotesToolConfig = {
   notesRoot: "/notes",
   memoryPrefix: "memory",
-  skillsPrefix: "skills",
+  deskPrefix: "desk",
+  trashPrefix: "trash",
   writeLog: false,
+  writeUnfiled: false,
   now: () => new Date("2026-08-17T10:00:00.000Z"),
 };
 
@@ -40,32 +42,72 @@ Met in 2024.
 `;
 
 describe("registration", () => {
-  it("registers all four memory tools", () => {
+  it("registers all five memory tools", () => {
     const { tools } = setup();
     expect([...tools.keys()].sort()).toEqual([
-      "append_note",
+      "append_memory",
       "get_note",
-      "replace_section",
+      "move_memory",
+      "replace_memory_section",
       "search_notes",
     ]);
   });
 
-  it("registers no whole-file write tool", () => {
-    // The absence is the safety mechanism — don't add one.
+  it("registers no whole-file write or delete tool", () => {
+    // The absence is the safety mechanism — don't add one. move_memory does
+    // not weaken it: nothing is destroyed, retiring a memory means moving it
+    // into trash, and a move refuses a destination that already exists.
     const { tools } = setup();
-    for (const name of ["write_note", "put_note", "create_note", "delete_note", "save_note"]) {
+    for (const name of [
+      "write_note",
+      "put_note",
+      "create_note",
+      "delete_note",
+      "save_note",
+      "remove_note",
+      "delete_memory",
+    ]) {
       expect(tools.has(name)).toBe(false);
     }
   });
 
+  it("registers no skill tool — skills are a separate write scope", () => {
+    const { tools } = setup();
+    expect(tools.has("append_skill")).toBe(false);
+    expect(tools.has("replace_skill_section")).toBe(false);
+  });
+
   it("honours DISABLED_TOOLS", () => {
+    const { tools } = withEnv(
+      { DISABLED_TOOLS: "append_memory, move_memory" },
+      () => setup()
+    );
+
+    expect(tools.has("append_memory")).toBe(false);
+    expect(tools.has("move_memory")).toBe(false);
+    expect(tools.has("get_note")).toBe(true);
+  });
+
+  it("ignores an unrecognized DISABLED_TOOLS entry that names an Object property", () => {
+    // The rename table is a Map, not an object literal: a plain object would
+    // resolve "constructor" off Object.prototype, and iterating a function
+    // throws — at registration time, so the server would fail to start.
+    for (const name of ["constructor", "toString", "valueOf", "__proto__"]) {
+      const { tools } = withEnv({ DISABLED_TOOLS: name }, () => setup());
+      expect(tools.has("append_memory")).toBe(true);
+    }
+  });
+
+  it("honours the pre-0.4 tool names in DISABLED_TOOLS", () => {
+    // A config written against append_note must keep disabling writes across
+    // the rename, rather than silently re-enabling them.
     const { tools } = withEnv(
       { DISABLED_TOOLS: "append_note, replace_section" },
       () => setup()
     );
 
-    expect(tools.has("append_note")).toBe(false);
-    expect(tools.has("replace_section")).toBe(false);
+    expect(tools.has("append_memory")).toBe(false);
+    expect(tools.has("replace_memory_section")).toBe(false);
     expect(tools.has("get_note")).toBe(true);
   });
 });
@@ -73,42 +115,42 @@ describe("registration", () => {
 describe("write scope guard", () => {
   it("rejects append_note outside Betty's own roots", async () => {
     const { call, backend } = setup();
-    const result = await call("append_note", { path: "journal/today.md", content: "x" });
+    const result = await call("append_memory", { path: "journal/today.md", content: "x" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
     expect(backend.files.size).toBe(0);
   });
 
-  it("allows append_note inside the skills root", async () => {
-    const { json, backend } = setup();
-    const result = await json("append_note", {
-      path: "skills/inbox-triage/SKILL.md",
-      content: "1. Sort the inbox.",
-      description: "Triage the inbox into reply-now and archive.",
-    });
-
-    expect(result.created).toBe(true);
-    expect(backend.files.has("skills/inbox-triage/SKILL.md")).toBe(true);
-  });
-
-  it("rejects a write to the skills root when skills are not configured", async () => {
-    const { call, backend } = setup({ skillsPrefix: undefined });
-    const result = await call("append_note", {
+  it("rejects a write to the skills root — that is append_skill's job", async () => {
+    // A tool named for memory must not be able to silently produce a skill.
+    const { call, backend } = setup();
+    const result = await call("append_memory", {
       path: "skills/inbox-triage/SKILL.md",
       content: "x",
       description: "y",
     });
 
     expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
     expect(backend.files.size).toBe(0);
+  });
+
+  it("allows writes to the desk and trash roots", async () => {
+    const { json, backend } = setup();
+
+    await json("append_memory", { path: "desk/backlog.md", content: "Ask about the migration." });
+    await json("append_memory", { path: "trash/old.md", content: "x" });
+
+    expect(backend.files.has("desk/backlog.md")).toBe(true);
+    expect(backend.files.has("trash/old.md")).toBe(true);
   });
 
   it("rejects replace_section outside the memory root", async () => {
     const { call, backend } = setup();
     backend.seed("journal/today.md", "# T\n\n## Notes\n\nold\n");
 
-    const result = await call("replace_section", {
+    const result = await call("replace_memory_section", {
       path: "journal/today.md",
       heading: "Notes",
       content: "new",
@@ -121,7 +163,7 @@ describe("write scope guard", () => {
   it("rejects a traversal that lands outside Betty's own roots", async () => {
     // Normalizes to "journal/x.md" — the guard runs after normalization.
     const { call } = setup();
-    const result = await call("append_note", { path: "memory/../journal/x.md", content: "x" });
+    const result = await call("append_memory", { path: "memory/../journal/x.md", content: "x" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
@@ -129,7 +171,7 @@ describe("write scope guard", () => {
 
   it("rejects a traversal that escapes the notes root entirely", async () => {
     const { call } = setup();
-    const result = await call("append_note", { path: "../../etc/passwd.md", content: "x" });
+    const result = await call("append_memory", { path: "../../etc/passwd.md", content: "x" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/escapes the notes root/);
@@ -137,7 +179,7 @@ describe("write scope guard", () => {
 
   it("rejects an absolute path", async () => {
     const { call } = setup();
-    const result = await call("append_note", { path: "/etc/passwd.md", content: "x" });
+    const result = await call("append_memory", { path: "/etc/passwd.md", content: "x" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/must be relative/);
@@ -145,14 +187,14 @@ describe("write scope guard", () => {
 
   it("rejects a name-prefixed sibling of the memory root", async () => {
     const { call } = setup();
-    const result = await call("append_note", { path: "memory-old/sam.md", content: "x" });
+    const result = await call("append_memory", { path: "memory-old/sam.md", content: "x" });
 
     expect(result.isError).toBe(true);
   });
 
   it("allows a write inside the memory root", async () => {
     const { json, backend } = setup();
-    const result = await json("append_note", { path: "memory/people/sam.md", content: "hello" });
+    const result = await json("append_memory", { path: "memory/people/sam.md", content: "hello" });
 
     expect(result.created).toBe(true);
     expect(backend.files.has("memory/people/sam.md")).toBe(true);
@@ -170,7 +212,7 @@ describe("write scope guard", () => {
 
   it("rejects a non-markdown extension", async () => {
     const { call } = setup();
-    const result = await call("append_note", { path: "memory/data.json", content: "{}" });
+    const result = await call("append_memory", { path: "memory/data.json", content: "{}" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/should end in \.md/);
@@ -178,16 +220,16 @@ describe("write scope guard", () => {
 
   it("adds .md when the path has no extension", async () => {
     const { json } = setup();
-    const result = await json("append_note", { path: "memory/sam", content: "x" });
+    const result = await json("append_memory", { path: "memory/sam", content: "x" });
 
     expect(result.path).toBe("memory/sam.md");
   });
 });
 
-describe("append_note", () => {
+describe("append_memory", () => {
   it("creates a note with all four required OKF keys", async () => {
     const { json, backend } = setup();
-    await json("append_note", { path: "memory/sam.md", content: "Likes tea." });
+    await json("append_memory", { path: "memory/sam.md", content: "Likes tea." });
 
     const text = backend.files.get("memory/sam.md")!;
     expect(text).toContain("type: note");
@@ -198,21 +240,21 @@ describe("append_note", () => {
 
   it("tags created notes with source: betty for bulk grep and delete", async () => {
     const { json, backend } = setup();
-    await json("append_note", { path: "memory/sam.md", content: "x" });
+    await json("append_memory", { path: "memory/sam.md", content: "x" });
 
     expect(backend.files.get("memory/sam.md")).toContain("source: betty");
   });
 
   it("derives a readable title from the filename", async () => {
     const { json, backend } = setup();
-    await json("append_note", { path: "memory/people/sam-taylor.md", content: "x" });
+    await json("append_memory", { path: "memory/people/sam-taylor.md", content: "x" });
 
     expect(backend.files.get("memory/people/sam-taylor.md")).toContain("title: Sam taylor");
   });
 
   it("uses an explicit title when given", async () => {
     const { json, backend } = setup();
-    await json("append_note", { path: "memory/sam.md", content: "x", title: "Sam Taylor" });
+    await json("append_memory", { path: "memory/sam.md", content: "x", title: "Sam Taylor" });
 
     expect(backend.files.get("memory/sam.md")).toContain("title: Sam Taylor");
   });
@@ -221,7 +263,7 @@ describe("append_note", () => {
     const { json, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    const result = await json("append_note", { path: "memory/sam.md", content: "New fact." });
+    const result = await json("append_memory", { path: "memory/sam.md", content: "New fact." });
 
     expect(result.created).toBe(false);
     expect(backend.files.get("memory/sam.md")).toContain("New fact.");
@@ -232,7 +274,7 @@ describe("append_note", () => {
     const { json, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    await json("append_note", { path: "memory/sam.md", content: "New fact." });
+    await json("append_memory", { path: "memory/sam.md", content: "New fact." });
 
     const updated = backend.files.get("memory/sam.md")!;
     expect(updated.startsWith(SAM_NOTE.slice(0, SAM_NOTE.indexOf("\n\n# Sam")))).toBe(true);
@@ -242,7 +284,7 @@ describe("append_note", () => {
     const { json, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    await json("append_note", {
+    await json("append_memory", {
       path: "memory/sam.md",
       content: "Also: no sugar.",
       heading: "Preferences",
@@ -256,7 +298,7 @@ describe("append_note", () => {
     const { call, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    const result = await call("append_note", {
+    const result = await call("append_memory", {
       path: "memory/sam.md",
       content: "x",
       heading: "Nope",
@@ -268,7 +310,7 @@ describe("append_note", () => {
 
   it("creates a note with the heading when one is requested", async () => {
     const { json, backend } = setup();
-    await json("append_note", { path: "memory/sam.md", content: "Tea.", heading: "Preferences" });
+    await json("append_memory", { path: "memory/sam.md", content: "Tea.", heading: "Preferences" });
 
     expect(backend.files.get("memory/sam.md")).toContain("## Preferences");
   });
@@ -285,7 +327,7 @@ describe("append_note", () => {
       return snapshot;
     });
 
-    const result = await call("append_note", { path: "memory/sam.md", content: "Betty's line." });
+    const result = await call("append_memory", { path: "memory/sam.md", content: "Betty's line." });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/changed since Betty last read it/);
@@ -294,130 +336,12 @@ describe("append_note", () => {
   });
 });
 
-describe("append_note writing a SKILL.md", () => {
-  const SKILL_PATH = "skills/inbox-triage/SKILL.md";
-
-  async function writeSkill(overrides: Record<string, unknown> = {}) {
-    const h = setup();
-    const result = await h.call("append_note", {
-      path: SKILL_PATH,
-      content: "1. `list_messages` for the last 24 hours.",
-      description: "Sort the inbox into reply-now and archive.",
-      ...overrides,
-    });
-    return { ...h, result };
-  }
-
-  it("writes name/description frontmatter, not an OKF title block", async () => {
-    // The whole point: list_skills reads `name` and `description`, and skips a
-    // folder whose SKILL.md has neither. An OKF block here loads as a note and
-    // fails as a skill.
-    const { backend } = await writeSkill();
-    const text = backend.files.get(SKILL_PATH)!;
-
-    expect(text).toContain("name: inbox-triage");
-    expect(text).toContain("description: Sort the inbox into reply-now and archive.");
-    expect(text).not.toContain("title:");
-    expect(text).not.toContain("type: note");
-  });
-
-  it("leads with name, then description", async () => {
-    const { backend } = await writeSkill();
-    const text = backend.files.get(SKILL_PATH)!;
-
-    expect(text.indexOf("name:")).toBeLessThan(text.indexOf("description:"));
-  });
-
-  it("still stamps source and timestamp so Betty's skills stay greppable", async () => {
-    const { backend } = await writeSkill();
-    const text = backend.files.get(SKILL_PATH)!;
-
-    expect(text).toContain("source: betty");
-    expect(text).toContain("timestamp: 2026-08-17T10:00:00Z");
-  });
-
-  it("takes the skill name from the folder, not the filename", async () => {
-    const { backend } = await writeSkill();
-
-    // Naming it from the file would call every skill "SKILL".
-    expect(backend.files.get(SKILL_PATH)).not.toContain("name: SKILL");
-  });
-
-  it("lets title override the derived name", async () => {
-    const { backend } = await writeSkill({ title: "inbox-zero" });
-
-    expect(backend.files.get(SKILL_PATH)).toContain("name: inbox-zero");
-  });
-
-  it("refuses to create a SKILL.md with no description", async () => {
-    const { result, backend } = await writeSkill({ description: undefined });
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/needs a description/);
-    expect(backend.files.has(SKILL_PATH)).toBe(false);
-  });
-
-  it.each([
-    ["at the root of the skills directory", "skills/SKILL.md"],
-    ["nested deeper than list_skills looks", "skills/team/triage/SKILL.md"],
-  ])("refuses a SKILL.md %s", async (_label, path) => {
-    const { call, backend } = setup();
-    const result = await call("append_note", { path, content: "x", description: "y" });
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/needs its own folder/);
-    expect(backend.files.size).toBe(0);
-  });
-
-  it("writes an ordinary OKF note for a non-SKILL file under skills", async () => {
-    // Only the manifest is special — supporting notes alongside it are notes.
-    const { json, backend } = setup();
-    await json("append_note", { path: "skills/inbox-triage/examples.md", content: "x" });
-
-    expect(backend.files.get("skills/inbox-triage/examples.md")).toContain("type: note");
-  });
-
-  it("appends to an existing SKILL.md without rewriting its frontmatter", async () => {
-    const { json, backend } = setup();
-    backend.seed(
-      SKILL_PATH,
-      "---\nname: inbox-triage\ndescription: Hand-written.\n---\n\n# Inbox triage\n\n1. First.\n"
-    );
-
-    await json("append_note", { path: SKILL_PATH, content: "2. Second." });
-    const text = backend.files.get(SKILL_PATH)!;
-
-    expect(text).toContain("description: Hand-written.");
-    expect(text).toContain("1. First.");
-    expect(text).toContain("2. Second.");
-    expect(text).not.toContain("source: betty");
-  });
-
-  it("replaces a section in an existing skill", async () => {
-    const { json, backend } = setup();
-    backend.seed(
-      SKILL_PATH,
-      "---\nname: inbox-triage\ndescription: d\n---\n\n# Inbox triage\n\n## Steps\n\nold\n"
-    );
-
-    const result = await json("replace_section", {
-      path: SKILL_PATH,
-      heading: "Steps",
-      content: "new",
-    });
-
-    expect(result.replaced).toBe(true);
-    expect(backend.files.get(SKILL_PATH)).toContain("new");
-    expect(backend.files.get(SKILL_PATH)).not.toContain("old");
-  });
-});
-
-describe("replace_section", () => {
+describe("replace_memory_section", () => {
   it("replaces only the targeted section", async () => {
     const { json, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    const result = await json("replace_section", {
+    const result = await json("replace_memory_section", {
       path: "memory/sam.md",
       heading: "History",
       content: "Met in 2023.",
@@ -434,7 +358,7 @@ describe("replace_section", () => {
     const { call, backend } = setup();
     backend.seed("memory/sam.md", SAM_NOTE);
 
-    const result = await call("replace_section", {
+    const result = await call("replace_memory_section", {
       path: "memory/sam.md",
       heading: "Nonexistent",
       content: "x",
@@ -448,7 +372,7 @@ describe("replace_section", () => {
 
   it("does not create a note that is missing", async () => {
     const { call, backend } = setup();
-    const result = await call("replace_section", {
+    const result = await call("replace_memory_section", {
       path: "memory/nope.md",
       heading: "H",
       content: "x",
@@ -469,7 +393,7 @@ describe("replace_section", () => {
       return snapshot;
     });
 
-    const result = await call("replace_section", {
+    const result = await call("replace_memory_section", {
       path: "memory/sam.md",
       heading: "History",
       content: "Met in 2023.",
@@ -650,29 +574,50 @@ describe("change log", () => {
   it("records creates and appends in log.md", async () => {
     const { json, backend } = setup({ writeLog: true });
 
-    await json("append_note", { path: "memory/sam.md", content: "one" });
-    await json("append_note", { path: "memory/sam.md", content: "two" });
+    await json("append_memory", { path: "memory/sam.md", content: "one" });
+    await json("append_memory", { path: "memory/sam.md", content: "two" });
 
-    const log = backend.files.get("memory/log.md")!;
+    const log = backend.files.get("desk/log.md")!;
     expect(log).toContain("`create` [memory/sam.md]");
     expect(log).toContain("`append` [memory/sam.md]");
   });
 
-  it("puts the log inside the memory root, not a hidden folder", async () => {
+  it("puts the log on the desk, out of the searchable memory root", async () => {
+    // log.md is bookkeeping. Under MEMORY_ROOT it would compete with real
+    // memories on every content search — thousands of path strings that match
+    // almost anything.
+    const { json, backend } = setup({ writeLog: true });
+    await json("append_memory", { path: "memory/sam.md", content: "one" });
+
+    expect(backend.files.has("desk/log.md")).toBe(true);
+    expect(backend.files.has("memory/log.md")).toBe(false);
+  });
+
+  it("puts the log in a visible folder, not a hidden one", async () => {
     // A dot-prefixed folder would be invisible to the user in Obsidian.
     const { json, backend } = setup({ writeLog: true });
-    await json("append_note", { path: "memory/sam.md", content: "one" });
+    await json("append_memory", { path: "memory/sam.md", content: "one" });
 
     expect([...backend.files.keys()].some((k) => k.split("/").some((s) => s.startsWith(".")))).toBe(
       false
     );
   });
 
+  it("records moves against the destination", async () => {
+    const { json, backend } = setup({ writeLog: true });
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    await json("move_memory", { from: "memory/sam.md", to: "trash/sam.md" });
+
+    // The link should point at a file that still exists.
+    expect(backend.files.get("desk/log.md")).toContain("`move` [trash/sam.md]");
+  });
+
   it("can be turned off", async () => {
     const { json, backend } = setup({ writeLog: false });
-    await json("append_note", { path: "memory/sam.md", content: "one" });
+    await json("append_memory", { path: "memory/sam.md", content: "one" });
 
-    expect(backend.files.has("memory/log.md")).toBe(false);
+    expect(backend.files.has("desk/log.md")).toBe(false);
   });
 
   it("reports a log failure as a warning without failing the note write", async () => {
@@ -682,9 +627,257 @@ describe("change log", () => {
       return MemoryNotesBackend.prototype.write.call(backend, path, text, ifMatch);
     });
 
-    const result = await json("append_note", { path: "memory/sam.md", content: "one" });
+    const result = await json("append_memory", { path: "memory/sam.md", content: "one" });
 
     expect(result.created).toBe(true);
     expect(result.warning).toMatch(/change log could not be updated/);
+  });
+});
+
+describe("move_memory", () => {
+  it("moves a memory and leaves nothing behind", async () => {
+    const { json, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    const result = await json("move_memory", {
+      from: "memory/sam.md",
+      to: "memory/people/sam.md",
+    });
+
+    expect(result).toMatchObject({ from: "memory/sam.md", to: "memory/people/sam.md", moved: true });
+    expect(backend.files.has("memory/sam.md")).toBe(false);
+    expect(backend.files.get("memory/people/sam.md")).toBe(SAM_NOTE);
+    expect(backend.moves).toEqual([{ from: "memory/sam.md", to: "memory/people/sam.md" }]);
+  });
+
+  it("retires a memory into trash", async () => {
+    const { json, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    await json("move_memory", { from: "memory/sam.md", to: "trash/sam.md" });
+
+    expect(backend.files.get("trash/sam.md")).toBe(SAM_NOTE);
+  });
+
+  it("refuses a destination outside Betty's own roots", async () => {
+    // The exfiltration guard. Checking only the source would let a memory be
+    // moved out into the user's own vault.
+    const { call, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    const result = await call("move_memory", { from: "memory/sam.md", to: "journal/sam.md" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Refusing to write outside Betty's own roots/);
+    expect(backend.files.has("memory/sam.md")).toBe(true);
+    expect(backend.moves).toEqual([]);
+  });
+
+  it("refuses a source outside Betty's own roots", async () => {
+    // And checking only the destination would let one of the user's own notes
+    // be relocated into Betty's storage.
+    const { call, backend } = setup();
+    backend.seed("journal/today.md", "# Today\n");
+
+    const result = await call("move_memory", { from: "journal/today.md", to: "memory/today.md" });
+
+    expect(result.isError).toBe(true);
+    expect(backend.files.has("journal/today.md")).toBe(true);
+    expect(backend.moves).toEqual([]);
+  });
+
+  it("refuses to move into the skills root", async () => {
+    const { call, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    const result = await call("move_memory", {
+      from: "memory/sam.md",
+      to: "skills/sam/SKILL.md",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(backend.moves).toEqual([]);
+  });
+
+  it("refuses to overwrite an existing destination", async () => {
+    const { call, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+    backend.seed("memory/people/sam.md", "# Someone else\n");
+
+    const result = await call("move_memory", {
+      from: "memory/sam.md",
+      to: "memory/people/sam.md",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(backend.files.get("memory/people/sam.md")).toBe("# Someone else\n");
+    expect(backend.files.has("memory/sam.md")).toBe(true);
+  });
+
+  it("refuses a move to where it already is", async () => {
+    const { call, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    const result = await call("move_memory", { from: "memory/sam.md", to: "memory/sam" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/already where it is/);
+  });
+
+  it("errors for a source that does not exist", async () => {
+    const { call } = setup();
+    const result = await call("move_memory", { from: "memory/nope.md", to: "trash/nope.md" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Note not found/);
+  });
+
+  it("names which argument was bad", async () => {
+    const { call } = setup();
+
+    const badFrom = await call("move_memory", { from: "/etc/passwd.md", to: "trash/x.md" });
+    expect(badFrom.content[0].text).toMatch(/from must be relative/);
+
+    const badTo = await call("move_memory", { from: "memory/sam.md", to: "/etc/passwd.md" });
+    expect(badTo.content[0].text).toMatch(/to must be relative/);
+  });
+
+  it("adds .md to both paths", async () => {
+    const { json, backend } = setup();
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    const result = await json("move_memory", { from: "memory/sam", to: "trash/sam" });
+
+    expect(result).toMatchObject({ from: "memory/sam.md", to: "trash/sam.md" });
+  });
+});
+
+describe("unfiled list", () => {
+  it("records a created memory as unfiled", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+
+    await json("append_memory", { path: "memory/sam.md", content: "x", title: "Sam Taylor" });
+
+    const unfiled = backend.files.get("desk/unfiled.md")!;
+    expect(unfiled).toContain("## Unprocessed");
+    expect(unfiled).toContain("`create` [memory/sam.md]");
+    expect(unfiled).toContain("Sam Taylor");
+  });
+
+  it("does not record an append to an existing memory", async () => {
+    // The unfiled list names memories to file, not a second change log.
+    const { json, backend } = setup({ writeUnfiled: true });
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    await json("append_memory", { path: "memory/sam.md", content: "another fact" });
+
+    expect(backend.files.has("desk/unfiled.md")).toBe(false);
+  });
+
+  it("records a move so the skill knows to reconcile the index", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    await json("move_memory", { from: "memory/sam.md", to: "memory/people/sam.md" });
+
+    expect(backend.files.get("desk/unfiled.md")).toContain("`move` [memory/people/sam.md]");
+  });
+
+  it("appends a second entry under the existing heading", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+
+    await json("append_memory", { path: "memory/a.md", content: "x" });
+    await json("append_memory", { path: "memory/b.md", content: "x" });
+
+    const unfiled = backend.files.get("desk/unfiled.md")!;
+    expect(unfiled.match(/## Unprocessed/g)).toHaveLength(1);
+    expect(unfiled).toContain("memory/a.md");
+    expect(unfiled).toContain("memory/b.md");
+  });
+
+  it("re-adds the heading rather than erroring when a human removed it", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+    backend.seed("desk/unfiled.md", "---\ntype: log\ntitle: Unfiled\n---\n\n# Unfiled\n\nAll clear.\n");
+
+    const result = await json("append_memory", { path: "memory/sam.md", content: "x" });
+
+    expect(result.warning).toBeUndefined();
+    expect(backend.files.get("desk/unfiled.md")).toContain("## Unprocessed");
+  });
+
+  it("does not record the desk's own files", async () => {
+    // Bookkeeping does not list itself as unfiled.
+    const { json, backend } = setup({ writeUnfiled: true });
+
+    await json("append_memory", { path: "desk/backlog.md", content: "Ask about the migration." });
+
+    expect(backend.files.get("desk/unfiled.md")).toBeUndefined();
+  });
+
+  it("does not record a memory being retired", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+    backend.seed("memory/sam.md", SAM_NOTE);
+
+    await json("move_memory", { from: "memory/sam.md", to: "trash/sam.md" });
+
+    expect(backend.files.has("desk/unfiled.md")).toBe(false);
+  });
+
+  it("can be turned off", async () => {
+    const { json, backend } = setup({ writeUnfiled: false });
+    await json("append_memory", { path: "memory/sam.md", content: "x" });
+
+    expect(backend.files.has("desk/unfiled.md")).toBe(false);
+  });
+
+  it("reports an unfiled-list failure as a warning without failing the memory write", async () => {
+    const { json, backend } = setup({ writeUnfiled: true });
+    jest.spyOn(backend, "write").mockImplementation(async (path: string, text: string, ifMatch?: string) => {
+      if (path.endsWith("unfiled.md")) throw new Error("unfiled storage is full");
+      return MemoryNotesBackend.prototype.write.call(backend, path, text, ifMatch);
+    });
+
+    const result = await json("append_memory", { path: "memory/sam.md", content: "x" });
+
+    expect(result.created).toBe(true);
+    expect(result.warning).toMatch(/the unfiled list could not be updated/);
+    expect(backend.files.has("memory/sam.md")).toBe(true);
+  });
+});
+
+describe("desk and trash are not searched", () => {
+  function seedDesk(backend: MemoryNotesBackend) {
+    backend.seed("memory/sam.md", "# Sam\n\nEspresso enthusiast.\n");
+    backend.seed("desk/log.md", "# Change log\n\n- espresso\n");
+    backend.seed("trash/old.md", "# Old\n\nEspresso, retired.\n");
+  }
+
+  it("omits desk and trash from an unscoped search", async () => {
+    const { json, backend } = setup();
+    seedDesk(backend);
+
+    const result = await json("search_notes", { query: "espresso", content: true });
+
+    expect(result.results.map((r: { path: string }) => r.path)).toEqual(["memory/sam.md"]);
+  });
+
+  it("searches them when dir points into them", async () => {
+    const { json, backend } = setup();
+    seedDesk(backend);
+
+    const result = await json("search_notes", { query: "espresso", dir: "trash", content: true });
+
+    expect(result.results.map((r: { path: string }) => r.path)).toEqual(["trash/old.md"]);
+  });
+
+  it("still reads a retired memory by path", async () => {
+    // Hidden from recall, not unreadable — that is what makes trash a
+    // retirement rather than a delete.
+    const { json, backend } = setup();
+    seedDesk(backend);
+
+    await expect(json("get_note", { path: "trash/old.md" })).resolves.toMatchObject({
+      path: "trash/old.md",
+    });
   });
 });

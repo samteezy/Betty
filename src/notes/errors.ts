@@ -22,9 +22,15 @@ export function conflictMessage(path: string): string {
   );
 }
 
+/**
+ * Deliberately names no write tool. This message is shared by the memory and
+ * skill paths, which have different ones — naming either would send the model
+ * to a tool that isn't registered for what it is doing.
+ */
 export function existsMessage(path: string): string {
   return (
     `Conflict creating "${path}": a file already exists there. ` +
-    `Read it with get_note first, then append_note or replace_section instead of recreating it.`
+    `Read it with get_note first, then append to it or replace one of its ` +
+    `sections instead of recreating it.`
   );
 }

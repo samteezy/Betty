@@ -11,6 +11,9 @@ jest.mock("../webdav/client", () => {
     putWithEtag: jest.fn(),
     delete: jest.fn(),
     mkcol: jest.fn(),
+    // A method missing here surfaces as "undefined is not a function" at
+    // runtime, not as a compile error — so it is easy to forget.
+    move: jest.fn(),
   };
   class WebDavError extends Error {
     constructor(
@@ -192,7 +195,11 @@ describe("write() — conditional update", () => {
 
   it("fetches the etag separately when the server does not return one", async () => {
     mockClient.putWithEtag.mockResolvedValue({ etag: undefined });
-    mockClient.propfind.mockResolvedValue([entry(`${ROOT}/memory/sam.md`, { getetag: '"e3"' })]);
+    // Two PROPFINDs now: the precondition check before the PUT sees the etag
+    // the caller holds, the lookup after it sees the new one.
+    mockClient.propfind
+      .mockResolvedValueOnce([entry(`${ROOT}/memory/sam.md`, { getetag: '"e1"' })])
+      .mockResolvedValueOnce([entry(`${ROOT}/memory/sam.md`, { getetag: '"e3"' })]);
 
     await expect(makeBackend().write("memory/sam.md", "b", '"e1"')).resolves.toEqual({
       etag: '"e3"',
@@ -274,5 +281,153 @@ describe("connect()", () => {
   it("propagates an auth failure as-is", async () => {
     mockClient.propfind.mockRejectedValue(new WebDavError(401, "unauthorized"));
     await expect(makeBackend().connect()).rejects.toThrow(/401/);
+  });
+});
+
+describe("move()", () => {
+  it("moves via the client with root-joined paths", async () => {
+    mockClient.move.mockResolvedValue(undefined);
+
+    await makeBackend().move("memory/sam.md", "trash/sam.md");
+
+    expect(mockClient.move).toHaveBeenCalledWith(`${ROOT}/memory/sam.md`, `${ROOT}/trash/sam.md`);
+  });
+
+  it("maps 412 to a conflict naming the destination", async () => {
+    // RFC 4918 §9.9.4: Overwrite "F" against a non-null destination is a 412.
+    mockClient.move.mockRejectedValue(new WebDavError(412, "precondition failed"));
+
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(
+      NoteConflictError
+    );
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(
+      /trash\/sam\.md/
+    );
+  });
+
+  it("maps 404 to not-found naming the source", async () => {
+    mockClient.move.mockRejectedValue(new WebDavError(404, "not found"));
+
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(
+      NoteNotFoundError
+    );
+  });
+
+  it("creates missing parent collections on 409 and retries", async () => {
+    mockClient.move
+      .mockRejectedValueOnce(new WebDavError(409, "conflict"))
+      .mockResolvedValueOnce(undefined);
+    mockClient.mkcol.mockResolvedValue(undefined);
+
+    await makeBackend().move("memory/sam.md", "trash/2026/sam.md");
+
+    expect(mockClient.mkcol).toHaveBeenCalledWith(`${ROOT}/trash`);
+    expect(mockClient.mkcol).toHaveBeenCalledWith(`${ROOT}/trash/2026`);
+    expect(mockClient.move).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a second 409 as a parent-folder failure", async () => {
+    mockClient.move.mockRejectedValue(new WebDavError(409, "conflict"));
+    mockClient.mkcol.mockResolvedValue(undefined);
+
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(
+      /parent folder could not be created/
+    );
+  });
+
+  it("leaves a 403 as a WebDavError rather than dressing it up as a conflict", async () => {
+    // Telling the model to retry under another name cannot fix a permission
+    // failure, so the real status has to survive.
+    mockClient.move.mockRejectedValue(new WebDavError(403, "forbidden"));
+
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.not.toThrow(
+      NoteConflictError
+    );
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(/403/);
+  });
+
+  it("leaves a 507 quota failure as a WebDavError", async () => {
+    mockClient.move.mockRejectedValue(new WebDavError(507, "insufficient storage"));
+
+    await expect(makeBackend().move("memory/sam.md", "trash/sam.md")).rejects.toThrow(/507/);
+  });
+});
+
+describe("preconditions are enforced client-side", () => {
+  // Fastmail Files accepts a PUT carrying a stale If-Match, a bogus one, or
+  // If-None-Match:* against a file that exists — verified against the live
+  // service. A client trusting the header alone silently clobbers a concurrent
+  // human edit on the backend this project documents first.
+  const etagResponse = (tag: string) => [entry(`${ROOT}/memory/sam.md`, { getetag: tag })];
+
+  it("refuses a stale conditional write without ever sending the PUT", async () => {
+    mockClient.propfind.mockResolvedValue(etagResponse('"current"'));
+
+    await expect(makeBackend().write("memory/sam.md", "body", '"stale"')).rejects.toBeInstanceOf(
+      NoteConflictError
+    );
+    expect(mockClient.putWithEtag).not.toHaveBeenCalled();
+  });
+
+  it("tells the model to re-read rather than retry blindly", async () => {
+    mockClient.propfind.mockResolvedValue(etagResponse('"current"'));
+
+    await expect(makeBackend().write("memory/sam.md", "b", '"stale"')).rejects.toThrow(
+      /changed since Betty last read it/
+    );
+  });
+
+  it("allows a conditional write when the etag still matches", async () => {
+    mockClient.propfind.mockResolvedValue(etagResponse('"e1"'));
+    mockClient.putWithEtag.mockResolvedValue({ etag: '"e2"' });
+
+    await expect(makeBackend().write("memory/sam.md", "body", '"e1"')).resolves.toEqual({
+      etag: '"e2"',
+    });
+    expect(mockClient.putWithEtag).toHaveBeenCalledTimes(1);
+  });
+
+  it("still sends If-Match, so servers that enforce it keep the atomic guarantee", async () => {
+    mockClient.propfind.mockResolvedValue(etagResponse('"e1"'));
+    mockClient.putWithEtag.mockResolvedValue({ etag: '"e2"' });
+
+    await makeBackend().write("memory/sam.md", "body", '"e1"');
+
+    expect(mockClient.putWithEtag.mock.calls[0][2]["If-Match"]).toBe('"e1"');
+  });
+
+  it("does not block a conditional write when the server reports no etag", async () => {
+    // Inconclusive is not the same as mismatched; let the PUT decide.
+    mockClient.propfind.mockResolvedValue([entry(`${ROOT}/memory/sam.md`, {})]);
+    mockClient.putWithEtag.mockResolvedValue({ etag: '"e2"' });
+
+    await expect(makeBackend().write("memory/sam.md", "body", '"e1"')).resolves.toBeDefined();
+  });
+
+  it("refuses a create when something already exists there", async () => {
+    mockClient.propfind.mockResolvedValue(etagResponse('"e1"'));
+
+    await expect(makeBackend().write("memory/sam.md", "body")).rejects.toBeInstanceOf(
+      NoteConflictError
+    );
+    expect(mockClient.putWithEtag).not.toHaveBeenCalled();
+  });
+
+  it("refuses a create even when the server returns no etag for the existing file", async () => {
+    // This is the seeding path: a missing etag must not read as "nothing here",
+    // or every startup would rewrite the user's edited SKILL.md.
+    mockClient.propfind.mockResolvedValue([entry(`${ROOT}/memory/sam.md`, {})]);
+
+    await expect(makeBackend().write("memory/sam.md", "body")).rejects.toBeInstanceOf(
+      NoteConflictError
+    );
+  });
+
+  it("allows a create when nothing is there", async () => {
+    mockClient.propfind.mockRejectedValue(new WebDavError(404, "not found"));
+    mockClient.putWithEtag.mockResolvedValue({ etag: '"e1"' });
+
+    await expect(makeBackend().write("memory/sam.md", "body")).resolves.toEqual({ etag: '"e1"' });
+    expect(mockClient.putWithEtag.mock.calls[0][2]["If-None-Match"]).toBe("*");
   });
 });

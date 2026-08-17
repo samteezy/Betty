@@ -8,6 +8,22 @@
  * "<etag>"` rather than the `If-Match: "*"` wildcard. The wildcard only
  * asserts that the resource exists; it will happily overwrite a note the user
  * edited in Obsidian thirty seconds ago.
+ *
+ * That header is necessary but, on real servers, not sufficient. **Fastmail
+ * Files — the setup this project documents first — accepts a PUT carrying a
+ * stale `If-Match`, a syntactically bogus one, or `If-None-Match: *` against a
+ * file that already exists.** Verified against the live service: all three are
+ * discarded. A client that trusted the header alone would silently clobber a
+ * concurrent human edit on the very backend most users run.
+ *
+ * So every conditional write is preceded by a PROPFIND that compares the
+ * current ETag itself, and every create by one that checks for existence. This
+ * costs one extra round trip per write and does not close the race — another
+ * writer can still land in the gap between PROPFIND and PUT — but it turns
+ * "silently overwrites your edit" into "almost always refuses", which is the
+ * difference between a promise that mostly holds and one that never does. The
+ * headers are still sent, so servers that do enforce them keep the atomic
+ * guarantee.
  */
 
 import { WebDavClient, WebDavError } from "../webdav/client.js";
@@ -125,7 +141,46 @@ export class WebDavNotesBackend implements NotesBackend {
     }
   }
 
+  /**
+   * Enforce the precondition client-side, because the server may not.
+   * See the file header: Fastmail Files discards If-Match and If-None-Match.
+   */
+  private async checkPrecondition(path: string, ifMatch?: string): Promise<void> {
+    if (ifMatch === undefined) {
+      // Create-only. Ask about existence directly: a server that returns no
+      // ETag would otherwise read as "nothing there" and permit an overwrite.
+      if (await this.existsAt(path)) throw new NoteConflictError(existsMessage(path));
+      return;
+    }
+
+    // An unreadable ETag means the file is gone, or the server won't say.
+    // Neither is grounds for refusing a write the caller holds an ETag for —
+    // let the PUT and its If-Match have the final word.
+    const current = await this.etagOf(path);
+    if (current !== undefined && current !== ifMatch) {
+      throw new NoteConflictError(conflictMessage(path));
+    }
+  }
+
+  /** Does anything exist at this path? Depth-0 PROPFIND, 404 means no. */
+  private async existsAt(path: string): Promise<boolean> {
+    try {
+      const responses = await this.client.propfind(
+        joinPath(this.root, path),
+        PROPFIND_ENTRIES,
+        "0"
+      );
+      return responses.length > 0;
+    } catch (err) {
+      if (err instanceof WebDavError && (err.status === 404 || err.status === 403)) return false;
+      // Any other failure is not evidence of absence. Say nothing is there and
+      // let If-None-Match have the final word rather than blocking the write.
+      return false;
+    }
+  }
+
   async write(path: string, text: string, ifMatch?: string): Promise<NoteWriteResult> {
+    await this.checkPrecondition(path, ifMatch);
     const target = joinPath(this.root, path);
     // If-None-Match "*" is a genuine create-only precondition; If-Match with a
     // real etag is genuine optimistic concurrency. Neither is a wildcard write.
@@ -152,6 +207,42 @@ export class WebDavNotesBackend implements NotesBackend {
     // Servers aren't obliged to return an ETag on PUT; fetch one so the caller
     // can chain another conditional write without a full re-read.
     return { etag: result.etag ?? (await this.etagOf(path)) };
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    const src = joinPath(this.root, from);
+    const dst = joinPath(this.root, to);
+    try {
+      await this.client.move(src, dst);
+    } catch (err) {
+      if (err instanceof WebDavError && err.status === 409) {
+        // 409 on MOVE means the destination's parent collection is missing —
+        // the trash folder, the first time anything is retired into it.
+        await this.ensureParents(to);
+        await this.client.move(src, dst).catch((retryErr) => {
+          throw this.translateMove(retryErr, from, to);
+        });
+        return;
+      }
+      throw this.translateMove(err, from, to);
+    }
+  }
+
+  private translateMove(err: unknown, from: string, to: string): unknown {
+    if (err instanceof WebDavError) {
+      // RFC 4918 §9.9.4: Overwrite "F" against a non-null destination is a 412.
+      if (err.status === 412) return new NoteConflictError(existsMessage(to));
+      if (err.status === 404) return new NoteNotFoundError(from);
+      if (err.status === 409) {
+        return new Error(
+          `Could not move "${from}" to "${to}": the parent folder could not be created on the server.`
+        );
+      }
+    }
+    // 403 (server refuses), 423 (locked), and 507 (quota) are not conflicts and
+    // must not be dressed up as one — telling the model to retry under another
+    // name cannot fix a permission or quota failure.
+    return err;
   }
 
   private translate(err: unknown, path: string, ifMatch?: string): unknown {

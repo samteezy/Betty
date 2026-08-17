@@ -11,6 +11,7 @@ import {
   missingRequiredKeys,
   parseNote,
   replaceSection,
+  sectionNotFoundMessage,
   serializeNote,
 } from "./okf";
 
@@ -342,5 +343,23 @@ describe("logLine()", () => {
     expect(logLine("t", "replace", "p", "Some\nheading")).toBe(
       "- t `replace` [p](p) — Some heading"
     );
+  });
+});
+
+describe("sectionNotFoundMessage() names no tool", () => {
+  // Memory and skills have separate append/replace tools since 0.4.0, so any
+  // tool name here would be wrong half the time — and a model that follows it
+  // calls something unregistered.
+  const RETIRED = ["append_note", "replace_section"];
+
+  it("does not name a retired tool when headings exist", () => {
+    const message = sectionNotFoundMessage("# T\n\n## Notes\n\nx\n", "Nope");
+    for (const name of RETIRED) expect(message).not.toContain(name);
+    expect(message).toContain('"Notes"');
+  });
+
+  it("does not name a retired tool when there are no headings", () => {
+    const message = sectionNotFoundMessage("plain text", "Nope");
+    for (const name of RETIRED) expect(message).not.toContain(name);
   });
 });

@@ -18,12 +18,22 @@ function toLeanEvents(
   return toLean(events, always, ["location"]);
 }
 
+/**
+ * Config is passed in rather than read from process.env here, so tool handlers
+ * stay free of transport and environment concerns.
+ */
+export interface CalendarToolConfig {
+  /** Calendar used when a tool call omits one. */
+  defaultCalendar?: string;
+}
+
 export function registerCalendarTools(
   server: McpServer,
-  backend: CalendarBackend
+  backend: CalendarBackend,
+  config: CalendarToolConfig = {}
 ): void {
   const disabled = parseDisabledTools();
-  const defaultCalendar = process.env.CALDAV_DEFAULT_CALENDAR?.trim() || undefined;
+  const defaultCalendar = config.defaultCalendar;
 
   if (toolEnabled("list_calendars", disabled)) {
     server.tool(

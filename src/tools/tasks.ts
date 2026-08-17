@@ -18,12 +18,22 @@ function toLeanTasks(
   return toLean(tasks, always, ["status", "due", "priority"]);
 }
 
+/**
+ * Config is passed in rather than read from process.env here, so tool handlers
+ * stay free of transport and environment concerns.
+ */
+export interface TaskToolConfig {
+  /** Calendar used when a tool call omits one. */
+  defaultCalendar?: string;
+}
+
 export function registerTaskTools(
   server: McpServer,
-  backend: TaskBackend
+  backend: TaskBackend,
+  config: TaskToolConfig = {}
 ): void {
   const disabled = parseDisabledTools();
-  const defaultCalendar = process.env.CALDAV_DEFAULT_CALENDAR?.trim() || undefined;
+  const defaultCalendar = config.defaultCalendar;
 
   if (toolEnabled("list_tasks", disabled)) {
     server.tool(

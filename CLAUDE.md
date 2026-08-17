@@ -42,6 +42,26 @@ Every non-email protocol activates alongside whichever email backend is configur
 | Type-check only | `npm run typecheck` |
 | Count tool tokens | `npm run count-tokens` |
 
+## Preflight
+
+**Run the full suite before reporting any code change as done.** Not the one test file you touched — the whole gate. A passing targeted test says nothing about the twenty other suites that share the harness, the backends, or the tool layer.
+
+```bash
+npm test && npm run lint && npm run typecheck && npm run build
+```
+
+All four must be green. Then, depending on what changed:
+
+- [ ] **`npm test`** — every suite, not just the one you edited.
+- [ ] **`npm run lint`** — `src/test-support/` is linted too, under the relaxed test-file rules.
+- [ ] **`npm run typecheck`** — two passes: `tsc --noEmit` for the shipped build, then `tsc -p tsconfig.test.json` for tests and test-support. A test file that doesn't compile is a test that isn't testing.
+- [ ] **`npm run build`** — then confirm `dist/` has no `test-support/` directory.
+- [ ] **Tool schemas changed?** `npm run count-tokens` and update the token cost table in `README.md`.
+- [ ] **User-facing behavior changed?** Update `README.md` — it's the authoritative reference.
+- [ ] **Shipping?** See the Release checklist below for the version bump.
+
+Report what actually ran. If a step was skipped or a test fails, say so with the output rather than reporting green.
+
 ## Architecture
 
 Entry point is `src/index.ts` — creates the `McpServer`, registers tools, and connects via stdio transport.
@@ -56,7 +76,17 @@ Entry point is `src/index.ts` — creates the `McpServer`, registers tools, and 
 
 5. **Notes backends** (`src/notes/`) — `NotesBackend` implementations over WebDAV or the local filesystem, selected via `NOTES_BACKEND`. Reads span `NOTES_ROOT`; writes are confined to `MEMORY_ROOT` by a code-enforced prefix check. Every write carries a real `If-Match` ETag and fails loudly on conflict rather than clobbering a concurrent human edit. Memory files use Google's Open Knowledge Format (OKF v0.1) — markdown with YAML frontmatter, one concept per file.
 
-6. **MCP tool layer** (`src/tools/`) — registers MCP tools that delegate to the configured backends. Tool inputs and outputs are designed for LLM usability: concise, structured, and avoiding raw protocol output where possible.
+6. **MCP tool layer** (`src/tools/`) — registers MCP tools that delegate to the configured backends. Tool inputs and outputs are designed for LLM usability: concise, structured, and avoiding raw protocol output where possible. Every `register*Tools` function takes its settings as a config object (`TaskToolConfig`, `NotesToolConfig`, …) rather than reading `process.env`.
+
+7. **Test support** (`src/test-support/`) — shared harness for tool-layer tests. `harness(server => registerXTools(...))` records tool registrations against a duck-typed `McpServer` and returns `names()`/`call()`/`json()` for driving the handlers; `backends.ts` holds in-memory backends that implement the real interfaces from `src/types.ts`, so an interface change breaks compilation rather than leaving the fakes silently behind; `env.ts` has `withEnv()` for the `DISABLED_TOOLS` tests. Excluded from `tsconfig.json` so it never ships in `dist/`.
+
+## Testing
+
+Jest with `ts-jest`. Test files sit next to the code they cover as `*.test.ts`.
+
+- `tsconfig.json` excludes tests and `src/test-support` from the build; `tsconfig.test.json` includes everything and is what both `ts-jest` and the second half of `npm run typecheck` use. Adding a test-only file means it must be reachable from `tsconfig.test.json`.
+- Prefer the shared harness over hand-rolling a mock server or backend in a test file — the two local copies that existed before were already drifting apart.
+- Tool-layer tests assert on the exact options object the backend received. These layers are a thin passthrough plus a lean projection, so passthrough fidelity is the thing worth pinning down.
 
 ## Key Design Principles
 
@@ -67,7 +97,7 @@ Entry point is `src/index.ts` — creates the `McpServer`, registers tools, and 
 - **User-disablable tools**: `DISABLED_TOOLS` env var prevents specific tools from being registered. See README for details.
 - **Read-wide, write-narrow**: notes reads may span `NOTES_ROOT`; writes are prefix-checked against `MEMORY_ROOT` and rejected otherwise. Enforced in code, never merely described in a tool description. There is deliberately **no whole-file write or overwrite tool** — the absence is the safety mechanism, so don't add one.
 - **Skills are instructions, not code**: Betty reads markdown from `SKILLS_ROOT`. Nothing in a skill's `scripts/` directory is ever read or executed.
-- **Transport-neutral tool layer**: all `process.env` reading happens in `src/index.ts` and is passed down as config objects. Tool handlers never reach for the environment, so an HTTP transport can be added later without rewriting them. (`parseDisabledTools()` at registration time is the one accepted exception.)
+- **Transport-neutral tool layer**: all `process.env` reading happens in `src/index.ts` and is passed down as config objects. Tool handlers never reach for the environment, so an HTTP transport can be added later without rewriting them. (`parseDisabledTools()` at registration time is the one accepted exception.) This now holds for every tool module — `registerTaskTools`, `registerCalendarTools`, and `registerContactTools` take their defaults as config instead of reading `CALDAV_DEFAULT_CALENDAR` / `CARDDAV_DEFAULT_ADDRESS_BOOK` directly.
 
 ## Versioning
 
@@ -80,7 +110,7 @@ Version lives in two places — `package.json` and the `McpServer` constructor i
 ## Release checklist
 
 1. Bump the version in **both** `package.json` and the `McpServer` constructor in `src/index.ts`.
-2. `npm run build && npm run lint && npm run typecheck && npm test` — all green.
+2. Run the full **Preflight** gate above — all green.
 3. `npm run count-tokens` and update the token cost table in `README.md` if tools changed.
 4. `npm publish` (runs `prepublishOnly` → `build`).
 

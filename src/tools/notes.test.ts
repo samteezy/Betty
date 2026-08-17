@@ -1,77 +1,7 @@
 import { registerNotesTools, NotesToolConfig } from "./notes";
-import { NoteEntry, NoteRead, NotesBackend, NoteWriteResult } from "../types";
-import { NoteConflictError, NoteNotFoundError, conflictMessage, existsMessage } from "../notes/errors";
-
-// --- Test harness ---
-
-type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
-type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-/** Duck-typed McpServer that just records registrations, as in count-tool-tokens.js. */
-function captureServer() {
-  const tools = new Map<string, { description: string; handler: Handler }>();
-  const server = {
-    tool: (name: string, description: string, _schema: unknown, handler: Handler) => {
-      tools.set(name, { description, handler });
-    },
-  };
-  return { server: server as never, tools };
-}
-
-/** In-memory NotesBackend with real etag semantics. */
-class MemoryBackend implements NotesBackend {
-  files = new Map<string, string>();
-  private versions = new Map<string, number>();
-
-  seed(path: string, text: string): void {
-    this.files.set(path, text);
-    this.versions.set(path, (this.versions.get(path) ?? 0) + 1);
-  }
-
-  private etag(path: string): string {
-    return `"v${this.versions.get(path) ?? 0}"`;
-  }
-
-  async connect(): Promise<void> {}
-
-  async list(dir: string): Promise<NoteEntry[]> {
-    const prefix = dir ? `${dir}/` : "";
-    const seen = new Map<string, NoteEntry>();
-    for (const path of this.files.keys()) {
-      if (!path.startsWith(prefix)) continue;
-      const rest = path.slice(prefix.length);
-      if (!rest) continue;
-      const [head, ...tail] = rest.split("/");
-      const childPath = `${prefix}${head}`;
-      if (seen.has(childPath)) continue;
-      seen.set(childPath, {
-        path: childPath,
-        name: head,
-        isDirectory: tail.length > 0,
-        etag: tail.length > 0 ? undefined : this.etag(childPath),
-      });
-    }
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  async read(path: string): Promise<NoteRead> {
-    const text = this.files.get(path);
-    if (text === undefined) throw new NoteNotFoundError(path);
-    return { text, etag: this.etag(path) };
-  }
-
-  async write(path: string, text: string, ifMatch?: string): Promise<NoteWriteResult> {
-    const exists = this.files.has(path);
-    if (ifMatch === undefined) {
-      if (exists) throw new NoteConflictError(existsMessage(path));
-    } else {
-      if (!exists) throw new NoteNotFoundError(path);
-      if (ifMatch !== this.etag(path)) throw new NoteConflictError(conflictMessage(path));
-    }
-    this.seed(path, text);
-    return { etag: this.etag(path) };
-  }
-}
+import { harness } from "../test-support/mcp";
+import { MemoryNotesBackend } from "../test-support/backends";
+import { withEnv } from "../test-support/env";
 
 const CONFIG: NotesToolConfig = {
   notesRoot: "/notes",
@@ -81,19 +11,11 @@ const CONFIG: NotesToolConfig = {
 };
 
 function setup(config: Partial<NotesToolConfig> = {}) {
-  const backend = new MemoryBackend();
-  const { server, tools } = captureServer();
-  registerNotesTools(server, backend, { ...CONFIG, ...config });
-  const call = (name: string, args: Record<string, unknown> = {}) => {
-    const tool = tools.get(name);
-    if (!tool) throw new Error(`Tool not registered: ${name}`);
-    return tool.handler(args);
-  };
-  const json = async (name: string, args: Record<string, unknown> = {}) => {
-    const result = await call(name, args);
-    return JSON.parse(result.content[0].text);
-  };
-  return { backend, tools, call, json };
+  const backend = new MemoryNotesBackend();
+  const h = harness((server) =>
+    registerNotesTools(server, backend, { ...CONFIG, ...config })
+  );
+  return { backend, ...h };
 }
 
 // --- Test fixtures ---
@@ -136,17 +58,14 @@ describe("registration", () => {
   });
 
   it("honours DISABLED_TOOLS", () => {
-    const original = process.env.DISABLED_TOOLS;
-    process.env.DISABLED_TOOLS = "append_note, replace_section";
-    try {
-      const { tools } = setup();
-      expect(tools.has("append_note")).toBe(false);
-      expect(tools.has("replace_section")).toBe(false);
-      expect(tools.has("get_note")).toBe(true);
-    } finally {
-      if (original === undefined) delete process.env.DISABLED_TOOLS;
-      else process.env.DISABLED_TOOLS = original;
-    }
+    const { tools } = withEnv(
+      { DISABLED_TOOLS: "append_note, replace_section" },
+      () => setup()
+    );
+
+    expect(tools.has("append_note")).toBe(false);
+    expect(tools.has("replace_section")).toBe(false);
+    expect(tools.has("get_note")).toBe(true);
   });
 });
 
@@ -459,7 +378,7 @@ describe("get_note", () => {
 });
 
 describe("search_notes", () => {
-  function seedTree(backend: MemoryBackend) {
+  function seedTree(backend: MemoryNotesBackend) {
     backend.seed(
       "index.md",
       "# Notes\n\n- [Sam Taylor](memory/people/sam.md)\n- [Project Betty](projects/betty.md)\n"
@@ -617,7 +536,7 @@ describe("change log", () => {
     const { json, backend } = setup({ writeLog: true });
     jest.spyOn(backend, "write").mockImplementation(async (path: string, text: string, ifMatch?: string) => {
       if (path.endsWith("log.md")) throw new Error("log storage is full");
-      return MemoryBackend.prototype.write.call(backend, path, text, ifMatch);
+      return MemoryNotesBackend.prototype.write.call(backend, path, text, ifMatch);
     });
 
     const result = await json("append_note", { path: "memory/sam.md", content: "one" });

@@ -1,5 +1,6 @@
 import { validateSavePath, toLeanMessages, parseEmailFormat } from "./register";
 import { EmailMessage } from "../types";
+import { withEnv } from "../test-support/env";
 
 // validateSavePath uses ATTACHMENT_DIR which resolves at module load from process.env.
 // We need to set it before import, but since it's already imported, we test against
@@ -92,39 +93,30 @@ describe("toLeanMessages()", () => {
 });
 
 describe("parseEmailFormat()", () => {
-  const original = process.env.EMAIL_FORMAT;
-  afterEach(() => {
-    if (original === undefined) delete process.env.EMAIL_FORMAT;
-    else process.env.EMAIL_FORMAT = original;
-  });
+  const format = (value: string | undefined) =>
+    withEnv({ EMAIL_FORMAT: value }, () => parseEmailFormat());
 
   it("defaults to plain when unset", () => {
-    delete process.env.EMAIL_FORMAT;
-    expect(parseEmailFormat()).toBe("plain");
+    expect(format(undefined)).toBe("plain");
   });
 
   it("returns plain for explicit 'plain'", () => {
-    process.env.EMAIL_FORMAT = "plain";
-    expect(parseEmailFormat()).toBe("plain");
+    expect(format("plain")).toBe("plain");
   });
 
   it("returns html for 'html'", () => {
-    process.env.EMAIL_FORMAT = "html";
-    expect(parseEmailFormat()).toBe("html");
+    expect(format("html")).toBe("html");
   });
 
   it("is case-insensitive", () => {
-    process.env.EMAIL_FORMAT = "HTML";
-    expect(parseEmailFormat()).toBe("html");
+    expect(format("HTML")).toBe("html");
   });
 
   it("trims whitespace", () => {
-    process.env.EMAIL_FORMAT = "  html  ";
-    expect(parseEmailFormat()).toBe("html");
+    expect(format("  html  ")).toBe("html");
   });
 
   it("defaults to plain for unknown values", () => {
-    process.env.EMAIL_FORMAT = "markdown";
-    expect(parseEmailFormat()).toBe("plain");
+    expect(format("markdown")).toBe("plain");
   });
 });

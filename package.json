@@ -1,6 +1,6 @@
 {
   "name": "betty-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Betty — an assistant layer for agentic platforms. Email, calendar, tasks, contacts, notes, memory, and skills, stored in your own file storage.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "lint": "eslint src/",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "count-tokens": "npm run build && node scripts/count-tool-tokens.js",
     "prepublishOnly": "npm run build"
   },

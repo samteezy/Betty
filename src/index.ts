@@ -104,7 +104,7 @@ function createNotesBackend(backendType: string, notesRoot: string): NotesBacken
 
 const server = new McpServer({
   name: "betty-mcp",
-  version: "0.1.0",
+  version: "0.1.1",
 });
 
 const backend = createBackend();
@@ -125,12 +125,15 @@ if (process.env.CALDAV_URL) {
     username,
     password,
   });
-  registerCalendarTools(server, calendarBackend);
-  registerTaskTools(server, calendarBackend);
+  // Resolved here, at the composition root, so tool handlers never touch env.
+  const defaultCalendar = process.env.CALDAV_DEFAULT_CALENDAR?.trim() || undefined;
+  registerCalendarTools(server, calendarBackend, { defaultCalendar });
+  registerTaskTools(server, calendarBackend, { defaultCalendar });
 }
 
 // Contacts — CardDAV when CARDDAV_URL is set, otherwise JMAP contacts when using JMAP backend
 let contactsBackend: ContactsBackend | null = null;
+const defaultAddressBook = process.env.CARDDAV_DEFAULT_ADDRESS_BOOK?.trim() || undefined;
 if (process.env.CARDDAV_URL) {
   const username = process.env.CARDDAV_USERNAME;
   const password = process.env.CARDDAV_PASSWORD;
@@ -144,11 +147,11 @@ if (process.env.CARDDAV_URL) {
     username,
     password,
   });
-  registerContactTools(server, contactsBackend);
+  registerContactTools(server, contactsBackend, { defaultAddressBook });
 } else if (backend instanceof JmapBackend) {
   // JMAP contacts activate automatically — no extra config needed
   contactsBackend = new JmapContactsBackend(backend);
-  registerContactTools(server, contactsBackend);
+  registerContactTools(server, contactsBackend, { defaultAddressBook });
 }
 
 // Notes, memory, and skills — activate when NOTES_BACKEND is set

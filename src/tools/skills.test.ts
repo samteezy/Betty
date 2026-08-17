@@ -1,72 +1,15 @@
 import { registerSkillsTools } from "./skills";
-import { NoteEntry, NoteRead, NotesBackend, NoteWriteResult } from "../types";
-import { NoteNotFoundError } from "../notes/errors";
-
-// --- Test harness ---
-
-type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
-type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-function captureServer() {
-  const tools = new Map<string, Handler>();
-  const server = {
-    tool: (name: string, _description: string, _schema: unknown, handler: Handler) => {
-      tools.set(name, handler);
-    },
-  };
-  return { server: server as never, tools };
-}
-
-class MemoryBackend implements NotesBackend {
-  files = new Map<string, string>();
-  reads: string[] = [];
-
-  seed(path: string, text: string): void {
-    this.files.set(path, text);
-  }
-
-  async connect(): Promise<void> {}
-
-  async list(dir: string): Promise<NoteEntry[]> {
-    const prefix = dir ? `${dir}/` : "";
-    const seen = new Map<string, NoteEntry>();
-    for (const path of this.files.keys()) {
-      if (!path.startsWith(prefix)) continue;
-      const rest = path.slice(prefix.length);
-      if (!rest) continue;
-      const [head, ...tail] = rest.split("/");
-      const childPath = `${prefix}${head}`;
-      if (!seen.has(childPath)) {
-        seen.set(childPath, { path: childPath, name: head, isDirectory: tail.length > 0 });
-      }
-    }
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  async read(path: string): Promise<NoteRead> {
-    this.reads.push(path);
-    const text = this.files.get(path);
-    if (text === undefined) throw new NoteNotFoundError(path);
-    return { text, etag: '"v1"' };
-  }
-
-  async write(): Promise<NoteWriteResult> {
-    throw new Error("skills storage is read-only");
-  }
-}
+import { harness } from "../test-support/mcp";
+import { MemoryNotesBackend } from "../test-support/backends";
+import { withEnv } from "../test-support/env";
 
 function setup(maxSkills?: number) {
-  const backend = new MemoryBackend();
-  const { server, tools } = captureServer();
-  registerSkillsTools(server, backend, { skillsPrefix: "skills", maxSkills });
-  const call = (name: string, args: Record<string, unknown> = {}) => {
-    const handler = tools.get(name);
-    if (!handler) throw new Error(`Tool not registered: ${name}`);
-    return handler(args);
-  };
-  const json = async (name: string, args: Record<string, unknown> = {}) =>
-    JSON.parse((await call(name, args)).content[0].text);
-  return { backend, tools, call, json };
+  // Skills storage is read-only — a write reaching the backend is a bug.
+  const backend = new MemoryNotesBackend({ readOnly: true });
+  const h = harness((server) =>
+    registerSkillsTools(server, backend, { skillsPrefix: "skills", maxSkills })
+  );
+  return { backend, ...h };
 }
 
 // --- Test fixtures ---
@@ -287,15 +230,9 @@ describe("skills are instructions, not code", () => {
 
 describe("registration", () => {
   it("honours DISABLED_TOOLS", () => {
-    const original = process.env.DISABLED_TOOLS;
-    process.env.DISABLED_TOOLS = "load_skill";
-    try {
-      const { tools } = setup();
-      expect(tools.has("list_skills")).toBe(true);
-      expect(tools.has("load_skill")).toBe(false);
-    } finally {
-      if (original === undefined) delete process.env.DISABLED_TOOLS;
-      else process.env.DISABLED_TOOLS = original;
-    }
+    const { tools } = withEnv({ DISABLED_TOOLS: "load_skill" }, () => setup());
+
+    expect(tools.has("list_skills")).toBe(true);
+    expect(tools.has("load_skill")).toBe(false);
   });
 });

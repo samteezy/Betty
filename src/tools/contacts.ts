@@ -18,12 +18,22 @@ function toLeanContacts(
   return toLean(contacts, always, ["emails", "phones"]);
 }
 
+/**
+ * Config is passed in rather than read from process.env here, so tool handlers
+ * stay free of transport and environment concerns.
+ */
+export interface ContactsToolConfig {
+  /** Address book used when a tool call omits one. */
+  defaultAddressBook?: string;
+}
+
 export function registerContactTools(
   server: McpServer,
-  backend: ContactsBackend
+  backend: ContactsBackend,
+  config: ContactsToolConfig = {}
 ): void {
   const disabled = parseDisabledTools();
-  const defaultAddressBook = process.env.CARDDAV_DEFAULT_ADDRESS_BOOK?.trim() || undefined;
+  const defaultAddressBook = config.defaultAddressBook;
 
   if (toolEnabled("list_address_books", disabled)) {
     server.tool(

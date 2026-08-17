@@ -5,6 +5,7 @@ import {
   toolEnabled,
   toLean,
 } from "./helpers";
+import { withEnv } from "../test-support/env";
 
 describe("errorResult()", () => {
   it("formats Error instances", () => {
@@ -39,33 +40,31 @@ describe("jsonResult()", () => {
 });
 
 describe("parseDisabledTools()", () => {
-  const original = process.env.DISABLED_TOOLS;
-  afterEach(() => {
-    if (original === undefined) delete process.env.DISABLED_TOOLS;
-    else process.env.DISABLED_TOOLS = original;
-  });
-
   it("returns empty set when unset", () => {
-    delete process.env.DISABLED_TOOLS;
-    expect(parseDisabledTools().size).toBe(0);
+    withEnv({ DISABLED_TOOLS: undefined }, () => {
+      expect(parseDisabledTools().size).toBe(0);
+    });
   });
 
   it("returns empty set for whitespace-only", () => {
-    process.env.DISABLED_TOOLS = "   ";
-    expect(parseDisabledTools().size).toBe(0);
+    withEnv({ DISABLED_TOOLS: "   " }, () => {
+      expect(parseDisabledTools().size).toBe(0);
+    });
   });
 
   it("parses comma-separated tools", () => {
-    process.env.DISABLED_TOOLS = "list_emails, send_email";
-    const disabled = parseDisabledTools();
-    expect(disabled.has("list_emails")).toBe(true);
-    expect(disabled.has("send_email")).toBe(true);
-    expect(disabled.size).toBe(2);
+    withEnv({ DISABLED_TOOLS: "list_emails, send_email" }, () => {
+      const disabled = parseDisabledTools();
+      expect(disabled.has("list_emails")).toBe(true);
+      expect(disabled.has("send_email")).toBe(true);
+      expect(disabled.size).toBe(2);
+    });
   });
 
   it("lowercases tool names", () => {
-    process.env.DISABLED_TOOLS = "List_Emails";
-    expect(parseDisabledTools().has("list_emails")).toBe(true);
+    withEnv({ DISABLED_TOOLS: "List_Emails" }, () => {
+      expect(parseDisabledTools().has("list_emails")).toBe(true);
+    });
   });
 });
 

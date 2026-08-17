@@ -4,7 +4,8 @@ const tsParser = require("@typescript-eslint/parser");
 module.exports = [
   {
     files: ["src/**/*.ts"],
-    ignores: ["**/*.test.ts"],
+    // test-support is excluded from tsconfig.json, so typed linting can't see it.
+    ignores: ["**/*.test.ts", "src/test-support/**"],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -29,7 +30,8 @@ module.exports = [
     },
   },
   {
-    files: ["src/**/*.test.ts"],
+    // test-support is test code that doesn't match *.test.ts — same rules.
+    files: ["src/**/*.test.ts", "src/test-support/**/*.ts"],
     languageOptions: {
       parser: tsParser,
     },

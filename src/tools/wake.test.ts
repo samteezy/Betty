@@ -1,5 +1,15 @@
 import { harness } from "../test-support/mcp";
-import { WAKE_TOOL, joinCapabilities, registerWakeTool } from "./wake";
+import { ToolGroup } from "./capabilities";
+import { WAKE_TOOL, registerWakeTool } from "./wake";
+
+/** A group as the gate would report it: open unless said otherwise. */
+const group = (name: string, tools: string[], extra: Partial<ToolGroup> = {}): ToolGroup => ({
+  group: name,
+  tools,
+  open: true,
+  deferred: false,
+  ...extra,
+});
 
 function fakeGate() {
   let open = false;
@@ -19,6 +29,7 @@ function setup(
   overrides: {
     capabilities?: string[];
     instructions?: () => Promise<string>;
+    inventory?: () => ToolGroup[];
     disabled?: Set<string>;
   } = {}
 ) {
@@ -28,6 +39,7 @@ function setup(
       gate,
       capabilities: overrides.capabilities ?? ["memory", "skills"],
       instructions: overrides.instructions ?? (async () => "# Betty\n\nInstructions."),
+      inventory: overrides.inventory,
       disabled: overrides.disabled ?? new Set(),
     })
   );
@@ -39,9 +51,45 @@ describe("wake_betty", () => {
     expect(setup().names()).toEqual([WAKE_TOOL]);
   });
 
-  it("returns the instructions verbatim", async () => {
+  it("returns the instructions verbatim, between a preamble and a footer", async () => {
     const { text } = setup();
-    expect(await text(WAKE_TOOL)).toBe("# Betty\n\nInstructions.");
+    expect(await text(WAKE_TOOL)).toContain("\n\n---\n\n# Betty\n\nInstructions.\n\n---\n\n");
+  });
+
+  it("names the tools it just revealed", async () => {
+    // The failure this exists for: the client has been told the list changed
+    // but the model is still looking at the old one, holding only wake_betty.
+    // A model that does not believe a tool exists will not call it.
+    const { text } = setup({
+      capabilities: ["memory", "skills", "mail"],
+      inventory: () => [
+        group("mail", ["list_messages", "send_message"]),
+        group("memory", ["search_notes", "get_note"]),
+        group("skills", ["list_skills", "load_skill"]),
+      ],
+    });
+
+    const body = await text(WAKE_TOOL);
+
+    expect(body).toContain("- **memory**: search_notes, get_note");
+    expect(body).toContain("- **mail**: list_messages, send_message");
+    // Ordered as the description reads, not as registration happened: memory
+    // and skills register last but lead, because they are what Betty is.
+    expect(body.indexOf("**memory**")).toBeLessThan(body.indexOf("**mail**"));
+  });
+
+  it("asks the model to check skills as well as tools", async () => {
+    // Two different questions that fail separately — a full tool list still
+    // does not say the user wrote a skill for exactly this.
+    const body = await setup().text(WAKE_TOOL);
+    expect(body).toContain("list_skills");
+    expect(body).toMatch(/taught/i);
+  });
+
+  it("still says the tool list changed when there is no inventory to name", async () => {
+    const body = await setup({ inventory: () => [] }).text(WAKE_TOOL);
+    expect(body).toMatch(/tool list/i);
+    expect(body).toContain("# Betty");
   });
 
   it("opens the gate", async () => {
@@ -60,7 +108,7 @@ describe("wake_betty", () => {
 
     expect(instructions).not.toHaveBeenCalled();
     expect(gate.awake).toBe(true);
-    expect(result.content[0].text).toMatch(/back online/);
+    expect(result.content[0].text).toMatch(/tool list again/);
   });
 
   it("says so when loaded=true finds the gate already open", async () => {
@@ -97,6 +145,18 @@ describe("wake_betty", () => {
     expect(result.content[0].text).toMatch(/list_skills/);
   });
 
+  it("names the tools even when the instructions cannot be read", async () => {
+    // Without the skill the inventory is the only orientation the model gets.
+    const { call } = setup({
+      instructions: async () => {
+        throw new Error("storage unreachable");
+      },
+      inventory: () => [group("memory", ["search_notes"])],
+    });
+
+    expect((await call(WAKE_TOOL)).content[0].text).toContain("- **memory**: search_notes");
+  });
+
   it("names the configured capabilities in its description", () => {
     const { tools } = setup({ capabilities: ["memory", "skills", "mail", "calendar"] });
     expect(tools.get(WAKE_TOOL)?.description).toContain(
@@ -119,19 +179,5 @@ describe("wake_betty", () => {
     // The composition root refuses to arm the gate in this case, and hands the
     // same set down so the two decisions cannot disagree.
     expect(setup({ disabled: new Set(["wake_betty"]) }).names()).toEqual([]);
-  });
-});
-
-describe("joinCapabilities()", () => {
-  it.each([
-    [["memory"], "memory"],
-    [["memory", "skills"], "memory and skills"],
-    [["memory", "skills", "mail"], "memory, skills and mail"],
-  ])("formats %j", (input, expected) => {
-    expect(joinCapabilities(input)).toBe(expected);
-  });
-
-  it("falls back to something readable when there is nothing to name", () => {
-    expect(joinCapabilities([])).toBe("her tools");
   });
 });

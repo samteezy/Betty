@@ -32,6 +32,13 @@ export interface CapturedTool {
    * for the gate to have anything to hold.
    */
   enabled: boolean;
+  /**
+   * The SDK's `RegisteredTool.update()`, narrowed to the fields Betty rewrites
+   * after registration — the composition root edits a description when a
+   * capability fails to authenticate, and a stub without this would make that
+   * path untestable.
+   */
+  update(updates: { description?: string; enabled?: boolean }): void;
 }
 
 /** Records server.tool() registrations without constructing a real McpServer. */
@@ -55,6 +62,10 @@ export function captureServer(): {
         schema,
         handler,
         enabled: true,
+        update: (updates) => {
+          if (updates.description !== undefined) captured.description = updates.description;
+          if (updates.enabled !== undefined) captured.enabled = updates.enabled;
+        },
       };
       tools.set(name, captured);
       return captured;

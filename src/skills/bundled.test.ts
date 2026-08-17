@@ -12,6 +12,7 @@ const PATHS = {
   deskPrefix: "betty/desk",
   trashPrefix: "betty/trash",
   skillsPrefix: "betty/skills",
+  capabilities: ["memory", "skills"],
 };
 
 /** Invariants every shipped skill has to hold, whatever it is for. */
@@ -39,6 +40,7 @@ describe.each(BUNDLED_SKILLS.map((s) => [s.name, s] as const))("bundled skill: %
       deskPrefix: "workbench",
       trashPrefix: "bin",
       skillsPrefix: "procedures",
+      capabilities: ["memory", "skills"],
     });
 
     expect(rendered).not.toContain("betty/memory");
@@ -52,6 +54,22 @@ describe.each(BUNDLED_SKILLS.map((s) => [s.name, s] as const))("bundled skill: %
     // mail-triage skill will legitimately claim "inbox"; if a bundled one did
     // too, "catch up on my inbox" would have two plausible answers.
     expect(text().toLowerCase()).not.toContain("inbox");
+  });
+
+  it("never volunteers a capability this server does not have", () => {
+    // A memory-only install that mentions mail in passing has told the model
+    // Betty does email — and it will offer that to the user, on a server with
+    // no mail tools and no mail credentials. organize-desk's "Not for email" is
+    // the one deliberate exception: it exists to push the word away, not to
+    // claim it.
+    const memoryOnly = skill
+      .build({ ...PATHS, capabilities: ["memory", "skills"] })
+      .toLowerCase()
+      .replace("not for email", "");
+
+    for (const absent of ["mail", "email", "calendar", "contacts"]) {
+      expect(memoryOnly).not.toContain(absent);
+    }
   });
 
   it("has a description distinct from every other bundled skill", () => {
@@ -76,6 +94,7 @@ describe("organize-desk", () => {
       deskPrefix: "workbench",
       trashPrefix: "bin",
       skillsPrefix: "procedures",
+      capabilities: ["memory", "skills"],
     });
 
     expect(text).toContain("brain/index.md");
@@ -171,6 +190,17 @@ describe("wake-betty", () => {
 
     expect(body).toMatch(/do not record/i);
     expect(body).toMatch(/one concept per file/i);
+  });
+
+  it("names the capabilities this server does have", () => {
+    // The other half of the same rule: silence about what is absent, but a
+    // model reading the skill cold should not have to discover mail by accident.
+    const body = wakeBettySkill({
+      ...PATHS,
+      capabilities: ["memory", "skills", "mail", "calendar"],
+    });
+
+    expect(body).toContain("mail and calendar are also configured");
   });
 
   it("points at the other skills rather than duplicating them", () => {

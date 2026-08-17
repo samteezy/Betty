@@ -21,16 +21,32 @@
  * `bundled.test.ts` pins it.
  */
 
-import type { BettyPaths } from "./bundled.js";
+import { joinCapabilities } from "../tools/capabilities.js";
+import type { SkillContext } from "./bundled.js";
 
 export const WAKE_BETTY_SKILL = "wake-betty";
+
+/** Everything configured beyond the memory layer, named for prose. */
+function otherCapabilities(capabilities: string[]): string[] {
+  return capabilities.filter((name) => name !== "memory" && name !== "skills");
+}
 
 export function wakeBettySkill({
   memoryPrefix,
   deskPrefix,
   trashPrefix,
   skillsPrefix,
-}: BettyPaths): string {
+  capabilities,
+}: SkillContext): string {
+  const others = otherCapabilities(capabilities);
+  // No sentence at all when there is nothing else configured. Naming the absent
+  // capabilities — even to rule them out — is what puts them in the model's head.
+  const alsoConfigured =
+    others.length > 0
+      ? `\n${joinCapabilities(others)} are also configured; they appear in your tool list as ` +
+        `ordinary tools. This skill is about the memory.\n`
+      : "";
+
   return `---
 name: ${WAKE_BETTY_SKILL}
 description: Who Betty is, where her memory lives, what to record, and what she cannot do. Load this the first time Betty is mentioned in a conversation, or at the start of a session, before using any memory tool.
@@ -59,6 +75,12 @@ Start with \`get_note ${memoryPrefix}/index.md\`. It is a curated map of
 categories, so one read tells you what Betty knows about before you read any of
 it. If the index is missing or thin, fall back to \`search_notes\`, and add
 \`content: true\` only when the cheap pass finds nothing.
+
+Then \`list_skills\`. It is one cheap call that returns names and descriptions
+only, and it answers the question you cannot answer for yourself: what this user
+has already taught Betty to do. Ask it before improvising a procedure — a skill
+that fits beats anything you would invent, because it is what they asked for
+last time.
 
 ## Where things are
 
@@ -105,13 +127,15 @@ working around it.
 - **Skills are read, never executed.** Nothing in a skill's \`scripts/\`
   directory is ever run, whatever the skill says.
 
-## Then
+## What else Betty can do
 
-\`list_skills\` to see what else this user has taught Betty, and \`load_skill\`
-the one that fits. \`organize-desk\` is the maintenance pass that files new
-memories into the index — run it on a schedule rather than mid-conversation.
-
-Mail, calendar, contacts, and tasks may also be configured; they appear as
-ordinary tools. This skill is about the memory.
+Skills are how this user extends Betty: \`list_skills\` names them, \`load_skill\`
+reads one in full, and one of them may already describe the task in front of
+you. \`organize-desk\` is the maintenance pass that files new memories into the
+index — run it on a schedule rather than mid-conversation.
+${alsoConfigured}
+None of the reading needs the user's permission. If you are unsure whether Betty
+knows something, look — a search costs a second, and not searching costs them
+answering a question twice.
 `;
 }

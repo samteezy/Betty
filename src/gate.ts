@@ -40,6 +40,41 @@ export interface ListChangedNotifier {
   sendToolListChanged(): void;
 }
 
+/**
+ * The tools one capability registered, in registration order.
+ *
+ * The gate is the only place that sees every registration, so it is also the
+ * only place that can tell `wake_betty` what it just revealed — a model whose
+ * client has not yet re-fetched `tools/list` otherwise has no way to know the
+ * names it may now call.
+ */
+export interface ToolGroup {
+  group: string;
+  tools: string[];
+  /** Whether these tools are visible right now. */
+  open: boolean;
+  /**
+   * True for a capability that waking does *not* reveal: it is configured and
+   * authenticated, but its schemas stay out of the context window until
+   * something asks for them by name.
+   */
+  deferred: boolean;
+}
+
+/** What {@link ToolGate.openGroup} did. */
+export type OpenOutcome = "opened" | "already-open" | "unknown";
+
+export interface WrapOptions {
+  /**
+   * Hold this group back at wake, to be revealed only on request.
+   *
+   * Defaults to false, which is the safe direction: a capability nobody marked
+   * behaves exactly as it did before there were tiers, rather than silently
+   * going missing.
+   */
+  deferred?: boolean;
+}
+
 export interface ToolGateOptions {
   /**
    * Close the gate again after this many milliseconds with no tool call.
@@ -61,8 +96,27 @@ export const SWEEP_INTERVAL_MS = 60_000;
  */
 const TOOL_REGISTRARS = new Set<string | symbol>(["tool", "registerTool"]);
 
+/** One capability's registrations, and what the gate has decided about them. */
+interface GroupState {
+  name: string;
+  tools: string[];
+  handles: GatedTool[];
+  deferred: boolean;
+  /**
+   * Opened by name at some point on this connection. A re-arm closes it, and
+   * the next wake opens it again — a model that needed mail an hour ago should
+   * not have to rediscover that after an idle stretch.
+   */
+  requested: boolean;
+  /**
+   * Configured, but its backend never authenticated. Withdrawn groups are
+   * invisible in every sense: never enabled, never listed, never nameable.
+   */
+  withdrawn: boolean;
+}
+
 export class ToolGate {
-  private readonly handles: GatedTool[] = [];
+  private readonly groups: GroupState[] = [];
   private readonly notifier: ListChangedNotifier;
   private readonly rearmMs: number;
   private readonly now: () => number;
@@ -84,7 +138,26 @@ export class ToolGate {
 
   /** How many tools the gate is holding. */
   get size(): number {
-    return this.handles.length;
+    return this.groups.reduce((total, group) => total + group.handles.length, 0);
+  }
+
+  /**
+   * What the gate is holding, grouped by the capability that registered it.
+   *
+   * Withdrawn groups are absent rather than flagged: a capability that failed to
+   * authenticate should not be something a model can see, name, or offer the
+   * user. Copied on the way out — `wake_betty` renders this into its reply, and
+   * the one thing worse than a stale list is a caller mutating the live one.
+   */
+  get inventory(): ToolGroup[] {
+    return this.groups
+      .filter((group) => !group.withdrawn)
+      .map((group) => ({
+        group: group.name,
+        tools: [...group.tools],
+        open: group.handles.every((handle) => handle.enabled),
+        deferred: group.deferred,
+      }));
   }
 
   /**
@@ -100,8 +173,16 @@ export class ToolGate {
    * asleep. Hence intercepting both registration methods, and passing
    * everything else (prompts, resources, notifications) straight through — none
    * of which the gate has any business touching.
+   *
+   * `group` labels whatever registers through this wrapper — one call per
+   * capability, so `wake_betty` can say *which* tools it just brought online
+   * rather than listing two dozen names flat, and so a capability can be
+   * revealed, held back, or withdrawn as a unit. The tool modules still know
+   * nothing: the composition root supplies the label, as it already supplies
+   * the same names to the wake tool's description.
    */
-  wrap(server: McpServer): McpServer {
+  wrap(server: McpServer, group = "tools", options: WrapOptions = {}): McpServer {
+    this.groupFor(group).deferred = options.deferred ?? false;
     return new Proxy(server, {
       get: (target, prop) => {
         const value = Reflect.get(target, prop);
@@ -116,11 +197,46 @@ export class ToolGate {
             target,
             this.instrument(args)
           );
-          this.handles.push(handle);
+          this.record(group, handle, args[0]);
           return handle;
         };
       },
     });
+  }
+
+  /**
+   * File a registered tool under its capability. The name is the first argument
+   * of both `tool()` and `registerTool()`; anything else is a call shape the
+   * gate does not recognize, and a missing line in the wake message is a better
+   * failure than a fabricated one. The handle is held either way — a tool the
+   * gate cannot name is still a tool it must not leave visible.
+   */
+  private record(group: string, handle: GatedTool, name: unknown): void {
+    const state = this.groupFor(group);
+    state.handles.push(handle);
+    if (typeof name === "string") state.tools.push(name);
+  }
+
+  /** The group's state, created on first sight. */
+  private groupFor(name: string): GroupState {
+    const existing = this.groups.find((group) => group.name === name);
+    if (existing) return existing;
+    const created: GroupState = {
+      name,
+      tools: [],
+      handles: [],
+      deferred: false,
+      requested: false,
+      withdrawn: false,
+    };
+    this.groups.push(created);
+    return created;
+  }
+
+  /** Whether this group's tools should be visible while Betty is awake. */
+  private shouldReveal(group: GroupState): boolean {
+    if (group.withdrawn) return false;
+    return !group.deferred || group.requested;
   }
 
   /**
@@ -148,18 +264,31 @@ export class ToolGate {
     this.lastActivity = this.now();
   }
 
+  /** Hide every tool the gate holds, whatever group it belongs to. */
+  private shutAll(): void {
+    for (const group of this.groups) {
+      for (const handle of group.handles) handle.enabled = false;
+    }
+  }
+
   /**
    * Close the gate for the first time. Called before the transport connects, so
    * no notification is warranted — the client has not yet asked for a list.
    */
   arm(): void {
-    for (const handle of this.handles) handle.enabled = false;
+    this.shutAll();
     this.open = false;
   }
 
   /**
    * Open the gate. Returns false if it was already open, which is what makes a
    * duplicate `wake_betty` harmless.
+   *
+   * Reveals every group except the deferred ones, which stay hidden until
+   * something calls {@link openGroup} for them by name — with the exception of a
+   * group already opened that way on this connection, which comes back. A
+   * re-arm is meant to cost the model a sentence, not the work of rediscovering
+   * that it needed mail.
    *
    * Sets `enabled` directly and sends one notification at the end rather than
    * calling the SDK's `enable()` per tool, which would emit one
@@ -168,16 +297,57 @@ export class ToolGate {
   wake(): boolean {
     this.touch();
     if (this.open) return false;
-    for (const handle of this.handles) handle.enabled = true;
+    for (const group of this.groups) {
+      if (!this.shouldReveal(group)) continue;
+      for (const handle of group.handles) handle.enabled = true;
+    }
     this.open = true;
     this.notifier.sendToolListChanged();
+    return true;
+  }
+
+  /**
+   * Reveal one deferred capability by name, and remember that it was wanted.
+   *
+   * Refuses a withdrawn or unknown group rather than reporting a success the
+   * client's next `tools/list` would contradict — the caller turns that into
+   * something the model can act on.
+   */
+  openGroup(name: string): OpenOutcome {
+    this.touch();
+    const group = this.groups.find((entry) => entry.name === name);
+    if (!group || group.withdrawn) return "unknown";
+    group.requested = true;
+    if (group.handles.every((handle) => handle.enabled)) return "already-open";
+    // Still asleep: record the request and let the next wake honour it, rather
+    // than revealing a capability while every other tool is hidden.
+    if (this.open) {
+      for (const handle of group.handles) handle.enabled = true;
+      this.notifier.sendToolListChanged();
+    }
+    return "opened";
+  }
+
+  /**
+   * Take a capability out of service — configured, but its backend never
+   * authenticated. Permanent for the life of the connection, and stronger than
+   * closing: a withdrawn group drops out of {@link inventory} too, so nothing
+   * downstream can name it to a model as something Betty might do.
+   */
+  withdraw(name: string): boolean {
+    const group = this.groups.find((entry) => entry.name === name);
+    if (!group || group.withdrawn) return false;
+    group.withdrawn = true;
+    group.requested = false;
+    for (const handle of group.handles) handle.enabled = false;
+    if (this.open) this.notifier.sendToolListChanged();
     return true;
   }
 
   /** Close the gate again, notifying the client. Returns false if already shut. */
   rearm(): boolean {
     if (!this.open) return false;
-    for (const handle of this.handles) handle.enabled = false;
+    this.shutAll();
     this.open = false;
     this.notifier.sendToolListChanged();
     return true;

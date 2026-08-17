@@ -105,9 +105,161 @@ describe("ToolGate.wrap()", () => {
     expect(handles.map((h) => h.name)).toEqual(["tool_0", "tool_1"]);
   });
 
+  it("records what it is holding, grouped by capability", () => {
+    // wake_betty reads this back to a model whose tool list has not caught up
+    // with the notification yet.
+    const { server } = stubServer();
+    const gate = new ToolGate(server);
+    const mail = gate.wrap(server, "mail") as unknown as { tool: (...a: unknown[]) => unknown };
+    const memory = gate.wrap(server, "memory") as unknown as {
+      registerTool: (...a: unknown[]) => unknown;
+    };
+
+    mail.tool("list_messages", "", {}, async () => "ok");
+    memory.registerTool("search_notes", {}, async () => "ok");
+    mail.tool("send_message", "", {}, async () => "ok");
+
+    expect(gate.inventory).toEqual([
+      { group: "mail", tools: ["list_messages", "send_message"], open: true, deferred: false },
+      { group: "memory", tools: ["search_notes"], open: true, deferred: false },
+    ]);
+  });
+
+  it("hands out a copy, not the live registry", () => {
+    const { gate } = setup(1);
+    gate.inventory[0].tools.push("invented_tool");
+    expect(gate.inventory[0].tools).toEqual(["tool_0"]);
+  });
+
   it("leaves the tool's return value alone", async () => {
     const { callTool } = setup(1);
     await expect(callTool(0)).resolves.toBe("ok");
+  });
+});
+
+describe("deferred capabilities", () => {
+  /** Two core tools and two deferred ones, the shape a real server has. */
+  function tiered() {
+    const { server, handles, notified } = stubServer();
+    const gate = new ToolGate(server);
+    const register = (target: McpServer, name: string) =>
+      (target as unknown as { tool: (...a: unknown[]) => unknown }).tool(
+        name,
+        "",
+        {},
+        async () => "ok"
+      );
+    register(gate.wrap(server, "memory"), "search_notes");
+    register(gate.wrap(server, "mail", { deferred: true }), "list_messages");
+    register(gate.wrap(server, "mail", { deferred: true }), "send_message");
+    gate.arm();
+    return {
+      gate,
+      notified,
+      visible: () => handles.filter((h) => h.enabled).map((h) => h.name),
+    };
+  }
+
+  it("leaves a deferred capability hidden when Betty wakes", () => {
+    const { gate, visible } = tiered();
+    gate.wake();
+    expect(visible()).toEqual(["search_notes"]);
+  });
+
+  it("reveals it when asked for by name", () => {
+    const { gate, visible } = tiered();
+    gate.wake();
+    expect(gate.openGroup("mail")).toBe("opened");
+    expect(visible()).toEqual(["search_notes", "list_messages", "send_message"]);
+  });
+
+  it("says so rather than lying when the name is not a capability", () => {
+    const { gate } = tiered();
+    gate.wake();
+    expect(gate.openGroup("telepathy")).toBe("unknown");
+  });
+
+  it("reports a second open as already-open, without a second notification", () => {
+    const { gate, notified } = tiered();
+    gate.wake();
+    gate.openGroup("mail");
+    const before = notified.length;
+    expect(gate.openGroup("mail")).toBe("already-open");
+    expect(notified).toHaveLength(before);
+  });
+
+  it("brings back a capability that was opened before the gate re-armed", () => {
+    // Otherwise an idle stretch mid-conversation would quietly cost the model
+    // the capability it had already decided it needed.
+    const { gate, visible } = tiered();
+    gate.wake();
+    gate.openGroup("mail");
+    gate.rearm();
+    gate.wake();
+    expect(visible()).toContain("list_messages");
+  });
+
+  it("marks what is open and what is held back", () => {
+    const { gate } = tiered();
+    gate.wake();
+    expect(gate.inventory).toEqual([
+      { group: "memory", tools: ["search_notes"], open: true, deferred: false },
+      {
+        group: "mail",
+        tools: ["list_messages", "send_message"],
+        open: false,
+        deferred: true,
+      },
+    ]);
+  });
+});
+
+describe("withdraw()", () => {
+  function withMail() {
+    const { server, handles, notified } = stubServer();
+    const gate = new ToolGate(server);
+    (gate.wrap(server, "mail") as unknown as { tool: (...a: unknown[]) => unknown }).tool(
+      "list_messages",
+      "",
+      {},
+      async () => "ok"
+    );
+    (gate.wrap(server, "memory") as unknown as { tool: (...a: unknown[]) => unknown }).tool(
+      "search_notes",
+      "",
+      {},
+      async () => "ok"
+    );
+    return { gate, handles, notified };
+  }
+
+  it("takes the capability out of the inventory entirely", () => {
+    // Not flagged as broken — absent. A capability a model cannot see is a
+    // capability it cannot promise the user.
+    const { gate } = withMail();
+    expect(gate.withdraw("mail")).toBe(true);
+    expect(gate.inventory.map((group) => group.group)).toEqual(["memory"]);
+  });
+
+  it("keeps it hidden through a later wake", () => {
+    const { gate, handles } = withMail();
+    gate.withdraw("mail");
+    gate.arm();
+    gate.wake();
+    expect(handles.find((h) => h.name === "list_messages")?.enabled).toBe(false);
+    expect(handles.find((h) => h.name === "search_notes")?.enabled).toBe(true);
+  });
+
+  it("cannot be re-opened by name", () => {
+    const { gate } = withMail();
+    gate.withdraw("mail");
+    expect(gate.openGroup("mail")).toBe("unknown");
+  });
+
+  it("is idempotent, and says so", () => {
+    const { gate } = withMail();
+    gate.withdraw("mail");
+    expect(gate.withdraw("mail")).toBe(false);
   });
 });
 

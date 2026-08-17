@@ -336,9 +336,76 @@ Useful when your notes are already synced by something else — Dropbox, iCloud 
 
 From there, add email with `JMAP_TOKEN` (or the `IMAP_*` set), calendars with `CALDAV_URL`, and contacts with `CARDDAV_URL`. See [Configuration](#configuration) for the full reference and [Usage with MCP clients](#usage-with-mcp-clients) for fuller examples.
 
+## Remote access
+
+Everything above launches Betty as a subprocess over stdio, which means she runs wherever your client runs. That covers the laptop and nothing else. Set `BETTY_TRANSPORT=http` and she serves [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) instead — run her on a machine at home, put a tunnel in front, and the same memory and skills are there from your phone.
+
+```bash
+BETTY_TRANSPORT=http \
+BETTY_HTTP_TOKEN=$(openssl rand -hex 32) \
+NOTES_BACKEND=local NOTES_ROOT=/home/you/Notes \
+  npx betty-mcp
+```
+
+```
+betty-mcp: listening on http://127.0.0.1:8765/mcp (health: http://127.0.0.1:8765/health)
+```
+
+Stdio is still the default and is unchanged — nothing about an existing config behaves differently.
+
+### With Docker
+
+There's a [`Dockerfile`](Dockerfile) and a [`docker-compose.yml`](docker-compose.yml) in the repo. The compose file defaults to the smallest useful Betty (local notes, no credentials) and has every other capability sitting commented out.
+
+```bash
+git clone https://github.com/samteezy/Betty.git && cd Betty
+echo "BETTY_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
+docker compose up -d
+curl localhost:8765/health   # {"status":"ok"}
+```
+
+The image serves HTTP on 8765 and the compose file publishes it to **loopback only**. Point your tunnel at `127.0.0.1:8765`; change that binding and Betty is on your LAN in the clear.
+
+### Connecting from a phone
+
+The token is accepted two ways, because the clients that matter here disagree about headers:
+
+| Form | Use it when |
+|------|-------------|
+| `Authorization: Bearer <token>` | Your client lets you set headers — Claude Code, `mcp-remote`, most desktop clients. |
+| `https://host/mcp/<token>` | Your client takes a URL and nothing else, which is the usual shape of a mobile connector UI. |
+
+The path form puts a secret in a URL, so treat that URL as the credential it is: it lands in browser history, and it would land in an access log if anything in front of Betty keeps one. Rotate it by changing `BETTY_HTTP_TOKEN` and restarting.
+
+### What's on the wire
+
+Betty serves **no TLS of her own**. She binds loopback by default and expects a tunnel or reverse proxy to terminate TLS — Tailscale, Cloudflare Tunnel, Caddy, whatever you already run. Exposing the port directly means a bearer token over plaintext HTTP.
+
+Three things she does do:
+
+- **Nothing reaches the MCP layer unauthenticated.** The token is checked first, in constant time, and a miss is a 401 before any Betty is built.
+- **Browsers are shut out unless invited.** Any request carrying an `Origin` header is refused unless that origin is in `BETTY_HTTP_ALLOWED_ORIGINS`, which is empty by default. Native MCP clients don't send one; a web page attacking a loopback bind does. `BETTY_HTTP_ALLOWED_HOSTS` does the same for the `Host` header when you want to pin the tunnel's hostname.
+- **Every session gets its own Betty.** The [wake gate](#the-wake-gate) is per-connection, so a session is a connection: your phone waking her doesn't wake her on the laptop, and each session's re-arm clock runs on its own. Sessions close on DELETE, on a dropped connection, and after `BETTY_HTTP_SESSION_TIMEOUT_MINUTES` of silence — a phone that walks out of wifi never sends the DELETE.
+
+`GET /health` answers `{"status":"ok"}` without a token, for tunnel and container health checks. It is the only unauthenticated endpoint and it says nothing about your configuration.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BETTY_TRANSPORT` | No | `stdio` (default) or `http`. Setting `BETTY_HTTP_PORT` implies `http`. |
+| `BETTY_HTTP_TOKEN` | When serving HTTP | Shared secret, minimum 16 characters. `openssl rand -hex 32`. |
+| `BETTY_HTTP_HOST` | No | Interface to bind (default `127.0.0.1`; the Docker image sets `0.0.0.0`) |
+| `BETTY_HTTP_PORT` | No | Port to bind (default `8765`) |
+| `BETTY_HTTP_PATH` | No | Endpoint path (default `/mcp`) |
+| `BETTY_HTTP_ALLOWED_ORIGINS` | No | Comma-separated origins allowed to send an `Origin` header (default: none) |
+| `BETTY_HTTP_ALLOWED_HOSTS` | No | Comma-separated `Host` values to accept (default: any) |
+| `BETTY_HTTP_MAX_SESSIONS` | No | Concurrent sessions before new ones are refused (default `8`) |
+| `BETTY_HTTP_SESSION_TIMEOUT_MINUTES` | No | Idle minutes before a session is closed (default `60`) |
+
+One licensing note, since this is the case the AGPL is actually about: running Betty for yourself or your household is not distribution and asks nothing of you. Running a *modified* Betty as a service other people use means offering those users the source — see [License](#license).
+
 ## Configuration
 
-The server is configured entirely through environment variables.
+The server is configured entirely through environment variables. The `BETTY_HTTP_*` set lives under [Remote access](#remote-access); everything else is below.
 
 Every capability is opt-in and activates on its own trigger variable — email on `EMAIL_BACKEND` (or a credential), calendar and tasks on `CALDAV_URL`, contacts on `CARDDAV_URL`, notes, memory, and skills together on `NOTES_BACKEND`. Configure one or all of them. If *nothing* is configured the server refuses to start rather than presenting an empty toolbox.
 

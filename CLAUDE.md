@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`betty-mcp` (published previously as `better-email-mcp`) is an MCP server for **Betty** — an assistant layer that travels between agentic platforms. Betty's memory and skills live in the user's own file storage rather than inside any one platform, so they move with them. See **[README.md](README.md)** for the authoritative reference on supported backends, configuration, available tools, and usage examples. Keep the README updated when adding or changing user-facing behavior.
+`betty-mcp` is an MCP server for **Betty** — an assistant layer that travels between agentic platforms. Betty's memory and skills live in the user's own file storage rather than inside any one platform, so they move with them. See **[README.md](README.md)** for the authoritative reference on supported backends, configuration, available tools, and usage examples. Keep the README updated when adding or changing user-facing behavior.
+
+Betty shares a codebase and lineage with [`better-email-mcp`](https://github.com/samteezy/better-email-mcp), which remains a separately maintained project for people who want email, calendar, and contacts without a memory layer. Neither supersedes the other. Keep changes to the email, calendar, task, and contact layers portable between the two — if a fix applies to both, it should be easy to carry across.
 
 High-level capabilities:
 
@@ -81,13 +83,8 @@ Version lives in two places — `package.json` and the `McpServer` constructor i
 2. `npm run build && npm run lint && npm run typecheck && npm test` — all green.
 3. `npm run count-tokens` and update the token cost table in `README.md` if tools changed.
 4. `npm publish` (runs `prepublishOnly` → `build`).
-5. **One-time, on the first `betty-mcp` publish** — point the old package at the new name so existing installs get told where it went:
 
-   ```bash
-   npm deprecate better-email-mcp "Renamed to betty-mcp — install that instead. Same project, now with notes, memory, and skills."
-   ```
-
-   Deprecate rather than unpublish: unpublishing breaks anyone pinned to an old version, while a deprecation notice shows up on every `npm install` without breaking a thing. The `better-email-mcp` name stays parked so nobody else can claim it.
+**Do not deprecate `better-email-mcp`.** It is a separately maintained package that stands on its own merits — a focused email/calendar/contacts MCP for people who don't want a memory layer. Betty is a sibling, not a replacement, and the two are published independently.
 
 ## Token cost table
 

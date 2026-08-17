@@ -4,7 +4,7 @@ Betty is an assistant layer that travels between agentic platforms. She gives LL
 
 Point Betty at a Fastmail Files folder or a local directory and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you.
 
-> Previously published as `better-email-mcp`.
+> Betty grew out of [`better-email-mcp`](https://github.com/samteezy/better-email-mcp) and shares its codebase. That project is still maintained and still recommended — if you want email, calendar, tasks, and contacts *without* a memory layer, use it directly. Betty is the same foundation plus notes, memory, and skills.
 
 ## Why Betty?
 
@@ -70,8 +70,8 @@ npm install -g betty-mcp
 For local development:
 
 ```bash
-git clone https://github.com/samteezy/better-email-mcp.git
-cd better-email-mcp
+git clone https://github.com/samteezy/betty-mcp.git
+cd betty-mcp
 npm install
 npm run build
 ```

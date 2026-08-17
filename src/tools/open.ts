@@ -39,7 +39,7 @@ export const OPEN_TOOL = "open_drawer";
 
 /** The slice of the gate this tool drives. */
 export interface CapabilityGate {
-  openGroup(name: string): "opened" | "already-open" | "unknown";
+  openGroup(name: string): "opened" | "already-open" | "asleep" | "unknown";
   inventory: ToolGroup[];
 }
 
@@ -124,6 +124,18 @@ export function registerOpenTool(
 
       const group = gate.inventory.find((entry) => entry.group === wanted);
       const tools = group?.tools.join(", ") ?? "";
+
+      // Betty went back to sleep between the model reading this tool and calling
+      // it. The request is on file, but nothing is in the tool list yet, and the
+      // one useful thing to say is which call fixes that.
+      if (outcome === "asleep") {
+        return text(
+          `Betty is asleep, so the ${wanted} drawer stays shut for now — its tools are not in your ` +
+            `tool list. The request is noted: call \`wake_betty\` and ${wanted} comes out with the ` +
+            `rest (${tools}).`
+        );
+      }
+
       const remaining = hiddenGroups(gate).map((entry) => entry.group);
       const rest = remaining.length > 0 ? ` Still closed: ${remaining.join(", ")}.` : "";
 

@@ -195,7 +195,7 @@ const configs = [
   },
   { label: "Everything, gated (before wake_betty)", groups: [wakeTools] },
   {
-    label: "Everything, awake (before open_drawer)",
+    label: "Everything, awake w/ BETTY_PROGRESSIVE_TOOLS=true",
     groups: [notesTools, skillsTools, openTools, wakeTools],
   },
 ];

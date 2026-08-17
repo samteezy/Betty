@@ -39,7 +39,7 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.6.0";
+export const SERVER_VERSION = "0.6.1";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -224,7 +224,20 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
   // when Betty wakes, until something calls `open_drawer` for it by name.
   // Memory and skills are never deferred — they are what waking is *for*, and a
   // model that has to ask twice before it can search would search less.
-  const defer = env.BETTY_PROGRESSIVE_TOOLS !== "false";
+  //
+  // Opt-in, because the second tier is the one that does not pay for itself by
+  // default. Waking already cuts a full configuration from ~2,062 schema tokens
+  // to ~1,105; holding mail and calendar back saves a further ~950, and charges
+  // a second mid-conversation `tools/list_changed` for it. On a client that
+  // fetches the new list synchronously that is a fair trade. On one that defers
+  // tool schemas behind its own search index — Claude Code, and anything else
+  // that hands the model a search tool instead of the definitions — it is a bad
+  // one twice over: the client is already doing the withholding, so the ~950 is
+  // not saved at all, and the extra list change is another turn the model spends
+  // discovering that a tool it was just promised is not callable yet. The
+  // failure mode is the expensive one, too — a model that decides Betty cannot
+  // read mail. Users on a synchronous client can still have the tokens back.
+  const defer = env.BETTY_PROGRESSIVE_TOOLS === "true";
   const wrap = (capability: string, deferred = false): McpServer =>
     gate ? gate.wrap(server, capability, { deferred: deferred && defer }) : server;
 

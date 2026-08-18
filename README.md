@@ -2,17 +2,12 @@
 
 Betty is an assistant layer that travels between agentic platforms. She gives LLM tools access to your email, calendar, tasks, and contacts — and, crucially, her memory and skills live in **your** file storage, not locked inside whichever platform you're subscribed to this month.
 
-Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you.
+Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you. Essentially, she lives in your notes.
+
+**Betty is not an agent.** Betty is a list of skills, tools, and instructions that the agent can use, but she's not an AI herself. This means she can live anywhere with minimal processing power and doesn't carry any separate costs of her own.
 
 > Betty grew out of [`better-email-mcp`](https://github.com/samteezy/better-email-mcp) and shares its codebase. That project is still maintained and still recommended — if you want email, calendar, tasks, and contacts *without* a memory layer, use it directly. Betty is the same foundation plus notes, memory, and skills.
 
-## Who Betty is
-
-Betty keeps the records. Ask her what you decided last week, how someone likes to be reached, or what you promised back in March — she has it, and she can tell you exactly where it is. Nothing gets dropped and nothing gets lost: she never overwrites and she cannot delete, so a thing she wrote down stays written down.
-
-And she works for **you**, not for the platform. The records live in your own file storage — plain markdown you can read without her — rather than inside whichever agentic service you're subscribed to this month. Change tools and she comes with you, records and all.
-
-**Your agent is not Betty.** Betty is who your agent works with: the model handles the conversation, Betty keeps the record it reads from and writes back to. She's a colleague, not a costume the model puts on.
 
 ## Why Betty?
 

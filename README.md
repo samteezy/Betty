@@ -8,7 +8,7 @@ Point Betty at a Fastmail Files folder or a local directory and she remembers wh
 
 ## Who Betty is
 
-Betty keeps the records. Ask her what you decided about the billing migration, how Priya likes to be reached, or what you promised someone back in March — she has it, and she can tell you exactly where it is. Nothing gets dropped and nothing gets lost: she never overwrites and she cannot delete, so a thing she wrote down stays written down.
+Betty keeps the records. Ask her what you decided last week, how someone likes to be reached, or what you promised back in March — she has it, and she can tell you exactly where it is. Nothing gets dropped and nothing gets lost: she never overwrites and she cannot delete, so a thing she wrote down stays written down.
 
 And she works for **you**, not for the platform. The records live in your own file storage — plain markdown you can read without her — rather than inside whichever agentic service you're subscribed to this month. Change tools and she comes with you, records and all.
 

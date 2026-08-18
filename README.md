@@ -1,8 +1,8 @@
 # Betty
 
-Betty is an assistant layer that travels between agentic platforms. She gives LLM tools access to your email, calendar, tasks, and contacts — and, crucially, her memory and skills live in **your** file storage, not locked inside whichever platform you're subscribed to this month.
+Betty is an assistant layer that travels between agentic platforms. She gives LLM tools access to your email, calendar, tasks, and contacts — and, crucially, her memory and skills live in **your** file storage, not locked inside whichever platform you're subscribed to this month. She's an assistant to the LLM, but she works for **you**.
 
-Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you. Essentially, she lives in your notes.
+Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you.
 
 **Betty is not an agent.** Betty is a MCP - a list of skills and tools that the agent can use, but she's not an AI herself. This means she can live anywhere with minimal processing power and doesn't carry any separate costs of her own.
 

@@ -2,8 +2,9 @@
 #
 #   1. Put a token in a .env file beside this one (.env is gitignored):
 #        echo "BETTY_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
-#   2. docker compose up -d
-#   3. Point a tunnel at 127.0.0.1:8765 and add the URL to your mobile client:
+#   2. mkdir -p notes   — as yourself, before the first `up`. See the volume note.
+#   3. docker compose up -d
+#   4. Point a tunnel at 127.0.0.1:8765 and add the URL to your mobile client:
 #        https://betty.example.ts.net/mcp/<the token>
 #
 # The port is published to loopback only. Betty reaches your mail and your
@@ -28,10 +29,16 @@ services:
     volumes:
       # Where memory, skills, and notes live with NOTES_BACKEND=local. Drop this
       # (and the two NOTES_ vars below) if you use WebDAV instead.
+      #
+      # Create it yourself first. If Docker has to create it for you it lands
+      # owned by root, and Betty — running as uid 1000 — then starts, answers
+      # /health, wakes, and fails every single write with EACCES. `mkdir -p
+      # notes` as yourself is the whole fix on a single-user box.
       - ${BETTY_NOTES_DIR:-./notes}:/notes
 
     # If your notes directory is owned by someone other than uid 1000, run as
     # its owner instead of the image's `node` user:
+    #   echo "BETTY_UID=$(id -u)" >> .env && echo "BETTY_GID=$(id -g)" >> .env
     # user: "${BETTY_UID:-1000}:${BETTY_GID:-1000}"
 
     environment:

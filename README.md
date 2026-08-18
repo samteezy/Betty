@@ -4,9 +4,9 @@ Betty is an assistant layer that travels between agentic platforms. She gives LL
 
 Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you. Essentially, she lives in your notes.
 
-**Betty is not an agent.** Betty is a list of skills, tools, and instructions that the agent can use, but she's not an AI herself. This means she can live anywhere with minimal processing power and doesn't carry any separate costs of her own.
+**Betty is not an agent.** Betty is a MCP - a list of skills and tools that the agent can use, but she's not an AI herself. This means she can live anywhere with minimal processing power and doesn't carry any separate costs of her own.
 
-By defining her as an independent entity, rather than building her in the agent you're using, the LLM you're working with can understand that Betty is separate and only invoked when needed.
+By defining her as an independent entity, rather than building her in the agent you're using, the LLM you're working with can understand that Betty is separate and only invoked when needed. The LLM is doing the thinking; Betty's executing the actions to assist it.
 
 > Betty grew out of [`better-email-mcp`](https://github.com/samteezy/better-email-mcp) and shares its codebase. That project is still maintained and still recommended — if you want email, calendar, tasks, and contacts *without* a memory layer, use it directly. Betty is the same foundation plus notes, memory, and skills.
 

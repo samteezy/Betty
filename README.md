@@ -26,8 +26,6 @@ And she's loyal — to *you*, not to the building. When you change jobs, Betty c
 
 Betty's memory is a folder of markdown files. No database, no embedding index, no proprietary store — the entire mechanism is files you can open, grep, edit, and delete.
 
-### Where it lives, and what it isn't
-
 Memory is not the same thing as your notes. `NOTES_ROOT` is everything Betty can **read** — point it at your whole vault if you like. Inside it, `betty/` is the only part she owns:
 
 ```
@@ -49,149 +47,11 @@ Notes/                          ← NOTES_ROOT — all of it readable
       meeting-prep/SKILL.md       ← yours
 ```
 
-Memory is a strict subset of your notes, and everything Betty writes lands in one folder you can inspect, back up, or delete wholesale.
+Memory is a strict subset of your notes, and everything Betty writes lands in one folder you can inspect, back up, or delete wholesale. Files follow Google's [Open Knowledge Format](https://github.com/google/open-knowledge-format) (OKF v0.1) — markdown with YAML frontmatter, one concept per file.
 
-Three of those four are memory in the ordinary sense. The fourth, `desk/`, is bookkeeping — a queue, a backlog, a change log — and it is deliberately **excluded from search**. Betty's paperwork should not compete with what she actually knows when you ask her a question. `trash/` is excluded for the same reason: retired means gone from recall, not deleted.
+Reads may span the whole vault; writes are confined to `betty/`, [enforced in code](#read-wide-write-narrow). There is no whole-file overwrite and no delete: retiring a memory means moving it into `trash/`, which drops out of search but stays readable.
 
-That containment has a consequence worth stating plainly: **an index Betty maintains is an index of memories, not of your notes.** She can only write inside `betty/`, so the `index.md` she curates covers what she has learned and written down — the people, projects, and preferences in `memory/`. Your own notes stay uncatalogued unless you index them yourself. Betty *searches* the whole vault; she only *catalogues* her own corner of it.
-
-### Recall
-
-`search_notes` works outward from the strongest signal. It reads the markdown links inside any `index.md` you've curated, then matches filenames straight off the directory listing — neither of which costs a file read. Pass `content: true` to also read bodies and frontmatter (one read per file, capped at 100). Every result carries `matchedOn` — `index`, `frontmatter`, `path`, or `body` — and results are ranked in that order, so the model can tell a curated hit from a coincidental filename match. `get_note` then reads the one that looked right, returning the body plus the list of headings available to `replace_memory_section`.
-
-`desk/` and `trash/` are skipped. Pass `dir` pointing into either one to search it deliberately — so nothing is unreachable, it just isn't in the way.
-
-When a search hits its bounds it says so — `truncated: true` with a reason — rather than returning a short list that looks complete.
-
-### Storing
-
-Three tools, all confined to `MEMORY_ROOT`, `DESK_ROOT`, and `TRASH_ROOT`:
-
-- **`append_memory`** adds content to a memory, creating it with OKF frontmatter if it doesn't exist. Pass `heading` to append under an existing section instead of at the end of the file.
-- **`replace_memory_section`** rewrites the content under a heading that already exists, leaving the rest of the file untouched. If the heading doesn't exist, the error lists the ones that do, so the model can retry instead of guessing.
-- **`move_memory`** moves or renames a memory. It refuses to overwrite, so the destination must not already exist.
-
-Skills have their own two tools — see [Betty can write skills too](#betty-can-write-skills-too). A memory tool cannot write a skill and a skill tool cannot write a memory, which is what keeps `DISABLED_TOOLS` able to freeze one without the other.
-
-That is the entire write surface — see [read-wide, write-narrow](#read-wide-write-narrow) for why there is nothing else. In particular there is **no delete**. Retiring a memory means `move_memory` into `trash/`, where it stops appearing in searches but stays readable by path. Nothing Betty wrote is ever destroyed.
-
-A write anywhere outside those directories is refused before it reaches storage, and the refusal names the roots so the model can retarget rather than give up.
-
-### What a memory file looks like
-
-Memory files follow Google's [Open Knowledge Format](https://github.com/google/open-knowledge-format) (OKF v0.1): markdown with YAML frontmatter, one concept per file, interlinked with plain markdown links.
-
-Ask Betty to remember how a colleague likes to work, and she writes:
-
-```markdown
----
-type: person
-title: Priya Raman
-description: Engineering manager on the billing team
-timestamp: 2026-08-17T14:22:09Z
-source: betty
----
-
-# Priya Raman
-
-Prefers async updates over standups. Owns the billing migration.
-```
-
-OKF requires only `type`, but Google's own reference parser expects all four of `type`, `title`, `description`, and `timestamp`, so Betty always writes all four — `type` defaults to `note`, and `description` falls back to the title. The `source: betty` key is Betty's own addition: everything she wrote stays greppable, and deletable in bulk, without touching anything you wrote yourself.
-
-Frontmatter keys are written in a fixed order — the four required ones, then the rest alphabetically — so a note she rewrites produces a clean diff instead of a reshuffled block.
-
-### index.md — the part worth curating
-
-`search_notes` reads `index.md` files before anything else and follows the markdown links inside them. Link *text* is matched as well as link target, so an index is how you tell Betty what a note is about without her having to read it:
-
-```markdown
-# People
-
-- [Priya Raman — billing, async-first](people/priya-raman.md)
-- [Dan Whitfield — vendor contact at Acme](people/dan-whitfield.md)
-```
-
-A hit here outranks every other kind. One curated index turns a folder Betty has to scan into one she can navigate.
-
-**Nothing in Betty's code ever writes an index**, and that is what keeps the ranking honest. A top-ranked index hit always means something was filed on purpose — by you, or by the [organize-desk skill](#the-desk) on its periodic pass. If code appended a line here every time a memory was created, the index would be a running list of raw entries wearing the authority of a curated one.
-
-Search reads **every** `index.md` under `NOTES_ROOT`, including ones you wrote for your own notes. If you want your wider vault indexed, write that index yourself; Betty will read it and rank hits from it just as highly.
-
-### The desk
-
-`betty/desk/` is where Betty keeps her working papers. None of it is searched.
-
-| File | What it is | Who writes it |
-|------|------------|---------------|
-| `unfiled.md` | Memories not yet in the index, under an `## Unprocessed` heading | Betty, automatically |
-| `backlog.md` | Things to raise with you next time | the organize-desk skill |
-| `log.md` | Append-only change history | Betty, automatically |
-
-**`unfiled.md`** gets a line each time a memory is created or moved:
-
-```markdown
-## Unprocessed
-
-- 2026-08-17T14:22:09Z `create` [betty/memory/people/priya-raman.md](…) — Priya Raman
-- 2026-08-17T14:31:44Z `move` [betty/memory/projects/betty.md](…) — moved from betty/memory/betty.md
-```
-
-That is the whole automatic half of the system. Deciding what those entries *mean* — whether a memory needs merging, re-filing, retiring, or raising with you, and where it belongs in the index — is the [organize-desk skill's](#organize-desk) job, and it runs when you or your schedule tell it to.
-
-**`log.md`** is the permanent record, distinct from `unfiled.md` because that list gets drained and the log never does:
-
-```markdown
-- 2026-08-17T14:22:09Z `create` [betty/memory/people/priya-raman.md](betty/memory/people/priya-raman.md)
-- 2026-08-17T14:31:44Z `append` [betty/memory/projects/betty.md](betty/memory/projects/betty.md) — Open questions
-- 2026-08-17T15:02:11Z `move` [betty/trash/old-note.md](betty/trash/old-note.md) — from betty/memory/old-note.md
-```
-
-Set `MEMORY_LOG=false` or `MEMORY_UNFILED=false` to turn either off. Both are deliberately best-effort: the memory write has already succeeded by that point, so a failure comes back as a `warning` on a successful write rather than as a failed one.
-
-Nothing is hidden in a dot-prefixed folder. Obsidian ignores dot paths entirely, and memory you can't see isn't memory you can trust — which is also why trash is a visible folder rather than a delete.
-
-### Telling Betty when to remember
-
-Betty exposes the tools; she doesn't inject instructions into your host's prompt. Deciding *when* to search and *when* to write is the host model's call, and left to their own devices most models under-use both.
-
-By default [the wake gate](#the-wake-gate) handles this for you: `wake_betty` is the only tool a client sees until it's called, and calling it hands the model your [wake-betty](#wake-betty--the-default) skill before it can touch anything else. No client-side configuration, on any platform.
-
-With the gate turned off (`BETTY_WAKE_GATE=false`), you need a line in your client's instructions — `CLAUDE.md`, a system prompt, a project rule — to do the same job:
-
-> If I mention Betty, `load_skill` **wake-betty** first.
-
-Or, if you'd rather not depend on the skill at all:
-
-> At the start of a session, `search_notes` for anything relevant to what I'm working on. When you learn something durable about me, my projects, or the people I work with, `append_memory` it under `betty/memory/`.
-
-### The two skills Betty ships with
-
-Both are installed the first time she connects, and never touched again.
-
-#### wake-betty — the default
-
-This is what `wake_betty` hands back, and what your one-line client rule should point at if you've turned [the wake gate](#the-wake-gate) off:
-
-> If I mention Betty, `load_skill` **wake-betty** first.
-
-It tells the model who Betty is, that the first move is to *search before answering*, where memory lives, what is worth recording, and — importantly — what she refuses to do, so it expects the refusal instead of working around it. Keeping it in a skill rather than in your client config is the whole point: the substance lives in your storage and travels with you, and the config stays a single line on every platform — or no line at all, with the gate on.
-
-`wake_betty` reads *your* copy of the file, not the bundled template. Edit it and you have edited Betty's boot prompt.
-
-#### organize-desk — the maintenance pass
-
-The other half of the memory system: the tools capture, and this decides what the captures mean.
-
-A pass over the desk drains `unfiled.md` — for each entry, merge it into an existing memory, re-file it, retire it into `trash/`, or add it to `backlog.md` to raise with you — then rebuilds `index.md` so every memory sits under a category heading, and finishes by reporting what's in the backlog.
-
-It is written to be run on a schedule. Point your client's daily or weekly job at it:
-
-> `load_skill` organize-desk and follow it.
-
-If it never runs, nothing breaks — memories still get written and searched. You simply get no index and no triage, which is exactly where Betty was before it existed.
-
-**Both files are seeded once and never revised**, so any edits you make survive upgrades — Betty never rewrites a skill she has handed over. Delete one and it comes back on the next start; set `BETTY_SEED_SKILLS=false` if you'd rather it didn't.
+**→ [Memory, in full](docs/memory.md)** — how recall ranks results, the OKF format, `index.md` and who writes it, the desk, and the two skills Betty ships with.
 
 ## Skills
 
@@ -441,6 +301,7 @@ Either way the first thing you should see is a single tool, `wake_betty`. That's
 | `401 Unauthorized` | No token, or the wrong one. Check for a stray newline or quote — `BETTY_HTTP_TOKEN=$(openssl rand -hex 32)` in a `.env` needs no quotes around it. |
 | `403 Origin not allowed` | The request carried an `Origin` header, so it came from a browser. Add that origin to `BETTY_HTTP_ALLOWED_ORIGINS`. Native clients never hit this. |
 | `403 Host not allowed` | `BETTY_HTTP_ALLOWED_HOSTS` is set and doesn't list the hostname your tunnel answers on. |
+| Container stuck `unhealthy`, but Betty answers fine through the tunnel | Same variable. The image's health check requests `/health` on `127.0.0.1`, and the `Host` check runs on every route — add `127.0.0.1:<port>` to the list. |
 | `404 Unknown or expired session — reinitialize` | The session was closed by a DELETE, a dropped connection, or `BETTY_HTTP_SESSION_TIMEOUT_MINUTES` of silence. The client should reinitialize; most do it for you. |
 | `503 Too many open sessions` | `BETTY_HTTP_MAX_SESSIONS` (default 8) is reached. Usually stale sessions from clients that dropped without a DELETE — they clear on the idle sweep, or raise the limit. |
 | Startup exits immediately | Betty refuses to serve without a token, and refuses one under 16 characters. The error says which. |
@@ -454,10 +315,10 @@ Betty serves **no TLS of her own**. She binds loopback by default and expects a 
 Three things she does do:
 
 - **Nothing reaches the MCP layer unauthenticated.** The token is checked first, in constant time, and a miss is a 401 before any Betty is built.
-- **Browsers are shut out unless invited.** Any request carrying an `Origin` header is refused unless that origin is in `BETTY_HTTP_ALLOWED_ORIGINS`, which is empty by default. Native MCP clients don't send one; a web page attacking a loopback bind does. `BETTY_HTTP_ALLOWED_HOSTS` does the same for the `Host` header when you want to pin the tunnel's hostname.
+- **Browsers are shut out unless invited.** Any request carrying an `Origin` header is refused unless that origin is in `BETTY_HTTP_ALLOWED_ORIGINS`, which is empty by default. Native MCP clients don't send one; a web page attacking a loopback bind does. `BETTY_HTTP_ALLOWED_HOSTS` does the same for the `Host` header when you want to pin the tunnel's hostname — note it is checked on every route, `/health` included.
 - **Every session gets its own Betty.** The [wake gate](#the-wake-gate) is per-connection, so a session is a connection: your phone waking her doesn't wake her on the laptop, and each session's re-arm clock runs on its own. Sessions close on DELETE, on a dropped connection, and after `BETTY_HTTP_SESSION_TIMEOUT_MINUTES` of silence — a phone that walks out of wifi never sends the DELETE.
 
-`GET /health` answers `{"status":"ok"}` without a token, for tunnel and container health checks. It is the only unauthenticated endpoint and it says nothing about your configuration.
+`GET /health` (and `HEAD`) answers `{"status":"ok"}` without a token, for tunnel and container health checks. It is the only route that serves content without one, and it says nothing about your configuration. A CORS preflight `OPTIONS` is also answered before the token is checked, but only for an origin that already passed the allow-list, so it discloses nothing either way.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -467,7 +328,7 @@ Three things she does do:
 | `BETTY_HTTP_PORT` | No | Port to bind (default `8765`) |
 | `BETTY_HTTP_PATH` | No | Endpoint path (default `/mcp`) |
 | `BETTY_HTTP_ALLOWED_ORIGINS` | No | Comma-separated origins allowed to send an `Origin` header (default: none) |
-| `BETTY_HTTP_ALLOWED_HOSTS` | No | Comma-separated `Host` values to accept (default: any) |
+| `BETTY_HTTP_ALLOWED_HOSTS` | No | Comma-separated `Host` values to accept (default: any). Applies to `/health` too — include `127.0.0.1:<port>` or the container's own health check fails |
 | `BETTY_HTTP_MAX_SESSIONS` | No | Concurrent sessions before new ones are refused (default `8`) |
 | `BETTY_HTTP_SESSION_TIMEOUT_MINUTES` | No | Idle minutes before a session is closed (default `60`) |
 
@@ -483,7 +344,7 @@ Every capability is opt-in and activates on its own trigger variable — email o
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `EMAIL_BACKEND` | `"jmap"`, `"imap"`, or `"none"` | `"jmap"` when a credential is present — see below |
+| `EMAIL_BACKEND` | `"jmap"`, `"imap"`, or `"none"` | Inferred from the credential — `"imap"` with only `IMAP_HOST`, otherwise `"jmap"` |
 | `EMAIL_FORMAT` | `"plain"` or `"html"` | `"plain"` |
 
 **Email is optional.** It activates when `EMAIL_BACKEND` is set, or when `JMAP_TOKEN` or `IMAP_HOST` is present — so setting just `JMAP_TOKEN` selects JMAP, as it always has. With no email variables at all, the email tools are simply not registered and Betty runs as a pure memory-and-skills layer. `EMAIL_BACKEND=none` disables email even when a token is present.
@@ -550,7 +411,7 @@ To use CardDAV instead — with the IMAP backend, or with no email backend at al
 | `CARDDAV_URL` | Yes | CardDAV principal or addressbook-home URL |
 | `CARDDAV_USERNAME` | Yes | HTTP Basic auth username |
 | `CARDDAV_PASSWORD` | Yes | HTTP Basic auth password |
-| `CARDDAV_DEFAULT_ADDRESS_BOOK` | No | Default address book name — when set, tools scope to this book automatically |
+| `CARDDAV_DEFAULT_ADDRESS_BOOK` | No | Default address book name — when set, tools scope to this book automatically. Read whether contacts come from CardDAV or JMAP, so it works with `JMAP_TOKEN` and no `CARDDAV_URL` |
 
 ### Notes, memory, and skills
 
@@ -568,13 +429,15 @@ This is what makes Betty an assistant rather than a mail client with extra steps
 | `MEMORY_UNFILED` | No | Append a line to `<DESK_ROOT>/unfiled.md` when a memory is created or moved (default: `true`) |
 | `BETTY_SEED_SKILLS` | No | Install the bundled `wake-betty` and `organize-desk` skills if they aren't already there (default: `true`) |
 | `BETTY_WAKE_GATE` | No | Hide every tool behind `wake_betty` until it is called — see [The wake gate](#the-wake-gate) (default: `true`) |
-| `BETTY_PROGRESSIVE_TOOLS` | No | Set `true` to keep mail, calendar, tasks, and contacts in their drawers at wake, to be opened by `open_drawer` — see [Progressive disclosure](#progressive-disclosure) (default: `false`) |
+| `BETTY_PROGRESSIVE_TOOLS` | No | Set `true` to keep mail, calendar, tasks, and contacts in their drawers at wake, to be opened by `open_drawer` — see [Progressive disclosure](docs/tools.md#progressive-disclosure) (default: `false`) |
 | `BETTY_WAKE_REARM_MINUTES` | No | Close the gate again after this many minutes with no tool call. `0` leaves it open for the life of the process (default: `10`) |
 | `WEBDAV_URL` | When `NOTES_BACKEND=webdav` | WebDAV base URL |
 | `WEBDAV_USERNAME` | When `NOTES_BACKEND=webdav` | HTTP Basic auth username |
 | `WEBDAV_PASSWORD` | When `NOTES_BACKEND=webdav` | HTTP Basic auth password |
 
-All four roots accept either a full path (`/Notes/betty/memory`) or a path relative to `NOTES_ROOT` (`betty/memory`). Either way, the server refuses to start if any falls outside `NOTES_ROOT`, or if two of them resolve to the same directory.
+These five are matched exactly and case-sensitively. `BETTY_PROGRESSIVE_TOOLS` turns on only for the literal string `true`; the other four turn off only for the literal string `false`. `True`, `TRUE`, `False`, and anything with surrounding whitespace are silently ignored and you get the default.
+
+All four roots accept either a full path (`/Notes/betty/memory`) or a path relative to `NOTES_ROOT` (`betty/memory`). Either way, the server refuses to start if any falls outside `NOTES_ROOT`, is empty, or is `NOTES_ROOT` itself — and the four must not **overlap**, which means no nesting, not merely no duplicates. `MEMORY_ROOT=betty` alongside the default `SKILLS_ROOT=betty/skills` is two different directories and still a startup error.
 
 All four default under `betty/` so that everything Betty owns sits in one folder inside your notes rather than scattered among them. None needs setting: `NOTES_BACKEND` and `NOTES_ROOT` are enough.
 
@@ -588,15 +451,9 @@ All four default under `betty/` so that everything Betty owns sits in one folder
 
 Betty can **read** anything under `NOTES_ROOT` — your whole vault, if you point her at it. She can only **write** under `MEMORY_ROOT`, `DESK_ROOT`, `TRASH_ROOT`, and `SKILLS_ROOT`. That boundary is enforced in code, before any request reaches storage, not merely described in a tool description the model is free to ignore.
 
-There is deliberately **no whole-file write or overwrite tool, and no delete**. Betty can create a memory, append to one, replace the content under a heading that already exists, and move one. She cannot replace a file wholesale, so the worst case for a note you wrote by hand is an unwanted paragraph at the end, not a vanished document.
+There is deliberately **no whole-file write or overwrite tool, and no delete**, and every write carries a conditional `If-Match` on the exact version Betty read — so an edit you made in Obsidian in the meantime fails the write loudly instead of being clobbered.
 
-`move_memory` refuses a destination that already exists, at every layer down to the `Overwrite: F` header on the WebDAV request — so a move can relocate a file but never consume one. Retiring a memory means moving it into `TRASH_ROOT`, which you can inspect and empty yourself.
-
-Every write is conditional. Betty reads a note, edits it, and writes it back with an `If-Match` on the exact version she read. If you edited that note in Obsidian in the meantime, the write fails loudly and she re-reads instead of clobbering your edit.
-
-**That header is not enough on its own, and Fastmail is the reason.** Fastmail Files accepts a `PUT` carrying a stale `If-Match`, a syntactically invalid one, or `If-None-Match: *` against a file that already exists — all three are discarded rather than honoured. Tested against the live service. So the WebDAV backend checks the precondition itself: a `PROPFIND` before every write compares the current ETag, or confirms nothing is there yet, and refuses locally if the server wouldn't. The headers are still sent, so a server that does enforce them keeps the stronger atomic guarantee.
-
-This costs one extra round trip per write, and it narrows the race rather than closing it — another writer can still land in the gap between the `PROPFIND` and the `PUT`. It is the difference between a guarantee that usually holds and one that never did. `MOVE` needs no such help: Fastmail honours `Overwrite: F` correctly, so a move genuinely cannot consume a file.
+**→ [Read-wide, write-narrow](docs/memory.md#read-wide-write-narrow)** — the full boundary, and why the WebDAV backend enforces the precondition itself rather than trusting the server.
 
 #### Fastmail setup
 
@@ -629,7 +486,7 @@ SKILLS_ROOT=/Users/you/Notes/betty/skills
 
 `DESK_ROOT` and `TRASH_ROOT` follow the same rules and default to `betty/desk` and `betty/trash`; set them only if you want Betty's paperwork somewhere else.
 
-For what Betty actually does with these directories — the file format, `index.md`, the desk, and how skills load — see [Memory](#memory) and [Skills](#skills).
+For what Betty actually does with these directories — the file format, `index.md`, the desk, and the bundled skills — see [docs/memory.md](docs/memory.md); for how skills load, [Skills](#skills).
 
 ### The wake gate
 
@@ -640,79 +497,21 @@ wake_betty — Load Betty's instructions and bring her tools online: memory,
              skills, mail, calendar, tasks and contacts. …
 ```
 
-Calling it brings her core tools online and hands back three things: a list of what just came online, grouped by capability; your own [wake-betty](#wake-betty--the-default) skill; and a closing nudge to search memory and call `list_skills` before answering.
+Calling it brings her tools online and hands back your own [wake-betty](docs/memory.md#wake-betty--the-default) skill. Two things that buys: Betty carries her own bootstrap, instead of it living in a client-side rule you re-write on every platform — and a full configuration costs ~104 tokens per request instead of ~2,166 until she is actually wanted.
 
-The tool list matters more than it looks. Waking is the one moment in a session when a model's tool list is stale — the gate fires `notifications/tools/list_changed`, but until the client acts on it the model is still looking at a list holding only `wake_betty`, and a model that doesn't believe a tool exists won't call it. Naming them in the reply closes that window. `list_skills` is the other half of the same question: the tools are what Betty *can* do, the skills are what you have *taught* her to do.
+It re-arms after `BETTY_WAKE_REARM_MINUTES` of quiet (default 10), so the next chat starts asleep. Turn it off with `BETTY_WAKE_GATE=false` if your client doesn't act on `notifications/tools/list_changed`. The gate requires `NOTES_BACKEND` — with no memory layer there is no skill to wake into.
 
-Two things the gate buys:
-
-- **Betty carries her own bootstrap.** Without the gate, the wake-betty skill only loads if you write a client-side rule for it — the one part of Betty that has to be re-done on every platform you use her from. A visible tool whose description is the trigger travels with her.
-- **~104 tokens instead of ~2,062.** A full configuration's tool schemas ride in the context window of every request, whether or not Betty comes up. Asleep, she costs one small tool definition.
-
-**It re-arms.** MCP has no concept of a conversation — the server sees one connection and then an undifferentiated stream of calls — so a gate that only opened once would stay open for the life of the process. On Claude Code that's your session; on a host that keeps one server running across chats, it's until you quit the app. `BETTY_WAKE_REARM_MINUTES` closes it again after a quiet stretch, so the next chat, or the next hour of unrelated work, starts asleep. Default 10 minutes; `0` disables it.
-
-Recovering from a re-arm mid-conversation is deliberately cheap: the model calls `wake_betty` with `loaded: true`, which brings the tools back without re-sending instructions it already has.
-
-**Turn it off with `BETTY_WAKE_GATE=false`** if your client doesn't act on `notifications/tools/list_changed` — waking works by telling the client the tool list changed, and a client that never refetches will see one tool forever. Claude Code and Claude Desktop both refetch. `DISABLED_TOOLS=wake_betty` turns the gate off too, since a gate with no key would strand every other tool.
-
-The gate requires `NOTES_BACKEND`. With no memory layer configured there is no skill to wake into, so a mail-and-calendar-only server is never gated.
-
-### Progressive disclosure
-
-Set `BETTY_PROGRESSIVE_TOOLS=true` and waking stops revealing everything. Memory and skills come online — they are what waking is *for* — while mail, calendar, tasks, and contacts stay hidden behind one more step:
-
-```
-open_drawer — Open one of Betty's drawers to reveal the tools inside: mail,
-              calendar, tasks and contacts. …
-```
-
-Her desk has drawers, and mail is in one of them. The wake reply lists what's in each **by tool name**, so the model can see that `list_events` and `search_events` exist without carrying their schemas. One call opens a drawer for the rest of the session; the gate remembers, so a later re-arm and re-wake leaves it open.
-
-(Drawers are capabilities, not the `desk/` folder — that one is Betty's bookkeeping, tidied by [organize-desk](#organize-desk).)
-
-That brings the awake tier to ~1,105 tokens instead of ~2,062 on a full configuration. A conversation about the user's week never pays for mail.
-
-**It's off by default, and that's a deliberate trade.** Waking already does most of the work — a full configuration drops from ~2,062 schema tokens to ~104 asleep, and drawers save a further ~950 once awake. What they cost is a *second* `tools/list_changed` in the middle of a conversation. Whether that's worth it depends entirely on your client:
-
-- **Clients that fetch the new tool list synchronously** get the ~950 for the price of one extra round trip. Turn it on.
-- **Clients that defer tool schemas behind their own search index** — Claude Code, and anything else that hands the model a search tool instead of the definitions — should leave it off. That client is already withholding schemas, so the ~950 isn't saved; meanwhile its index typically refreshes on a turn boundary rather than on the notification, so the model spends a turn discovering that a tool it was just promised isn't callable yet. Worst case it concludes Betty can't read mail at all.
-
-The wake gate itself is subject to the same lag — it's one list change instead of two — which is what `BETTY_WAKE_GATE=false` is for if you'd rather have no mid-conversation churn at all.
-
-### When a credential doesn't authenticate
-
-Every backend authenticates at startup — a JMAP session fetch, an IMAP `LOGIN`, a CalDAV `PROPFIND`. A capability that is configured but *not accepted* is taken out of service rather than taking the server down with it:
-
-```
-betty-mcp: mail is configured but did not authenticate (401 Unauthorized) —
-           its tools stay hidden for this session.
-```
-
-Betty starts. Memory, skills, and anything else that authenticated work normally. The failed capability leaves nothing behind: its tools never appear, `wake_betty`'s description stops naming it, `open_drawer` will not open it, and the bundled `wake-betty` skill is seeded without mentioning it. A model cannot offer the user something Betty has no working credential for.
-
-Two boundaries worth knowing:
-
-- **Notes are still fatal.** A notes root that can't be reached is a configuration error you have to fix, and Betty with no memory isn't a smaller Betty.
-- **Degrading needs the gate.** With `BETTY_WAKE_GATE=false` the tools are plainly registered and there are no handles to take back, so a failed connect exits the process — exactly as it did before, and as `better-email-mcp` still does.
-- **JMAP contacts fall with mail**, since they ride on the same session; CalDAV calendar and tasks fall together for the same reason.
-
-### Disabling tools
-
-Set `DISABLED_TOOLS` to a comma-separated list of tool names to prevent them from being registered:
-
-```bash
-DISABLED_TOOLS=send_message,search_messages
-```
-
-This is useful for enforcing read-only access or reducing context for the LLM. When using `CALDAV_DEFAULT_CALENDAR` or `CARDDAV_DEFAULT_ADDRESS_BOOK`, you can also disable `list_calendars` or `list_address_books` since the LLM no longer needs to discover them.
+**→ [Tools](docs/tools.md)** — the wake gate in full, [progressive disclosure](docs/tools.md#progressive-disclosure) and `open_drawer`, [what happens when a credential doesn't authenticate](docs/tools.md#when-a-credential-doesnt-authenticate), and [`DISABLED_TOOLS`](docs/tools.md#disabling-tools).
 
 ### Attachment downloads
 
 The `get_attachment` tool supports a `saveTo` parameter that writes the file to disk instead of returning base64 content. For security, `saveTo` paths are restricted to a base directory:
 
 ```bash
-ATTACHMENT_DIR=~/Downloads  # default; set to change the allowed directory
+ATTACHMENT_DIR=/home/you/Downloads  # default is <your home>/Downloads
 ```
+
+The default is computed from your home directory. Set it to an **absolute path** — a leading `~` is only expanded by a shell, and an MCP client's `env` block is not one, so `"~/Downloads"` there resolves to a literal `~` folder under the working directory.
 
 ## Usage with MCP clients
 
@@ -837,132 +636,21 @@ If you have a mail credential in your environment for other reasons and want ema
 
 ## Tools
 
-### Waking (WebDAV or local)
+| Capability | Tools | Registers on |
+|------------|-------|--------------|
+| Waking | `wake_betty`, `open_drawer` | `NOTES_BACKEND`, unless `BETTY_WAKE_GATE=false` |
+| Email | 6 — list, get, search, send, folders, attachments | `JMAP_TOKEN` or `IMAP_HOST`. On IMAP, `send_message` needs SMTP |
+| Calendar | 4 — list, get, search, list calendars | `CALDAV_URL` |
+| Tasks | 6 — list, get, search, create, update, complete | `CALDAV_URL` |
+| Contacts | 4 — list, get, search, list address books | `CARDDAV_URL`, or JMAP email |
+| Notes and memory | 5 — `search_notes`, `get_note`, `append_memory`, `replace_memory_section`, `move_memory` | `NOTES_BACKEND` |
+| Skills | 4 — `list_skills`, `load_skill`, `append_skill`, `replace_skill_section` | `NOTES_BACKEND` |
 
-| Tool | Description |
-|------|-------------|
-| `wake_betty` | Bring Betty's core tools online, then hand back the names of the tools just revealed, the names of the ones held back, and the `wake-betty` skill. Pass `loaded: true` to re-enable them without re-sending instructions the model already has |
-| `open_drawer` | Open one of Betty's drawers to reveal its tools — `mail`, `calendar`, `tasks`, or `contacts`. Only registered while Betty is awake, and only when a drawer is actually being held shut |
+A capability that isn't configured registers nothing at all, rather than registering tools that error — an unusable tool still costs context. All tool responses use compact JSON, and list and search tools return a lean field set by default; pass `verbose: true` for everything.
 
-The only tool visible until it's called. Registered whenever `NOTES_BACKEND` is set, unless `BETTY_WAKE_GATE=false` — see [The wake gate](#the-wake-gate).
+On a full configuration that is ~2,166 schema tokens awake and ~104 asleep, which is what most requests in a session actually pay.
 
-### Email
-
-| Tool | Description |
-|------|-------------|
-| `list_folders` | List all email folders/mailboxes |
-| `list_messages` | List recent messages with optional folder, limit, and offset |
-| `get_message` | Get a single message by ID, including full body and attachment metadata |
-| `search_messages` | Search messages by text query |
-| `get_attachment` | Download an email attachment by part ID. Returns base64 content, or saves to disk if `saveTo` path is provided |
-| `send_message` | Send an email (JMAP, or IMAP with SMTP configured) |
-
-### Calendar (CalDAV)
-
-| Tool | Description |
-|------|-------------|
-| `list_calendars` | List all calendars |
-| `list_events` | List calendar events with optional calendar filter and limit |
-| `get_event` | Get a single event by href, including full details |
-| `search_events` | Search events by text query (matches title, description, location) |
-
-### Tasks (CalDAV VTODO)
-
-| Tool | Description |
-|------|-------------|
-| `list_tasks` | List tasks (excludes completed/cancelled by default; pass `includeCompleted: true` to show all) |
-| `get_task` | Get a single task by href, including full details |
-| `search_tasks` | Search tasks by text query (matches title, description, categories) |
-| `create_task` | Create a new task with title, due date, priority, categories |
-| `update_task` | Update an existing task's fields |
-| `complete_task` | Mark a task as completed |
-
-### Contacts (CardDAV)
-
-| Tool | Description |
-|------|-------------|
-| `list_address_books` | List all address books |
-| `list_contacts` | List contacts with optional address book filter and limit |
-| `get_contact` | Get a single contact by href, including full details |
-| `search_contacts` | Search contacts by name, email, phone, or organization |
-
-### Notes and memory (WebDAV or local)
-
-| Tool | Description |
-|------|-------------|
-| `search_notes` | Search notes. Reads `index.md` files and matches filenames by default; pass `content: true` to also search bodies and frontmatter. Skips the desk and trash unless `dir` points into them |
-| `get_note` | Read a note anywhere under `NOTES_ROOT`, returning its body, title, type, and the headings available to `replace_memory_section` |
-| `append_memory` | Append to a memory, creating it with OKF frontmatter if missing. Optionally appends under a named heading |
-| `replace_memory_section` | Replace the content under an existing heading, leaving the rest of the file untouched |
-| `move_memory` | Move or rename a memory. Refuses to overwrite; retire a memory by moving it into `TRASH_ROOT` |
-
-Reads may span `NOTES_ROOT`; the three write tools are restricted to `MEMORY_ROOT`, `DESK_ROOT`, and `TRASH_ROOT`. There is no whole-file write tool and no delete. See [Memory](#memory) for how these fit together.
-
-### Skills (WebDAV or local)
-
-| Tool | Description |
-|------|-------------|
-| `list_skills` | List available skills by name and description only |
-| `load_skill` | Load the full instructions for one skill by name |
-| `append_skill` | Append instructions to a skill by name, creating it if missing |
-| `replace_skill_section` | Replace the content under an existing heading in a skill |
-
-The two write tools are restricted to `SKILLS_ROOT`, which no memory tool can reach — so `DISABLED_TOOLS` can freeze skills and memory independently.
-
-## Token efficiency
-
-All tool responses use compact JSON (no pretty-printing). List and search tools (`list_messages`, `search_messages`, `list_events`, `search_events`, `list_tasks`, `search_tasks`, `list_contacts`, `search_contacts`, `search_notes`) return a lean field set by default — just enough to identify and triage each item. Pass `verbose: true` to get the full response with all fields.
-
-Skills go further: `list_skills` returns only each skill's name and description, and the full instructions load on demand via `load_skill`. A dozen skills cost a few hundred tokens to know about, not a few thousand.
-
-If you never dictate skills or never reorganize memory, `DISABLED_TOOLS=append_skill,replace_skill_section,move_memory` takes about 300 tokens back off every request.
-
-**Tool definition token cost** (schema tokens consumed per request, estimated at ~3.5 chars/token):
-
-Tools are only registered when the matching backend is configured. Combine rows to estimate your setup:
-
-| Protocol | Tools | Est. tokens |
-|----------|-------|-------------|
-| IMAP | 6 | ~373 |
-| JMAP (`EMAIL_FORMAT=html` adds `htmlBody`) | 6 | ~380 |
-| CalDAV — calendar | 4 | ~192 |
-| CalDAV — tasks | 6 | ~383 |
-| CardDAV | 4 | ~206 |
-| Notes & memory | 5 | ~587 |
-| Skills | 4 | ~316 |
-| `open_drawer` (awake, a drawer to open) | 1 | ~98 |
-| **Asleep** (any of the above, gate on) | **1** | **~104** |
-
-Notes and skills register together on `NOTES_BACKEND`, so those two rows come as a pair unless you trim them with `DISABLED_TOOLS`.
-
-**Example totals:** IMAP only ~373 · Notes + Skills only ~903 · IMAP + CalDAV + Tasks ~947 · No email (CalDAV + Tasks + Notes + Skills) ~1,477 · Everything (JMAP + CalDAV + Tasks + CardDAV + Notes + Skills) ~2,062
-
-Those are the *fully open* numbers — every capability revealed at once. What a full configuration actually costs depends on the gate:
-
-| Tier | What the model can see | Est. tokens |
-|------|------------------------|-------------|
-| Asleep | `wake_betty` | ~104 |
-| Awake | all 29 tools | ~2,062 |
-
-Most requests in a session are made asleep, so ~104 is the number that gets paid most often, and it drops back there after `BETTY_WAKE_REARM_MINUTES` of quiet.
-
-With `BETTY_PROGRESSIVE_TOOLS=true` a middle tier appears — memory, skills, `open_drawer`, and the *names* of what is in each drawer, at ~1,105 — and mail schemas arrive only in the conversations that are about mail. Whether that's a saving or a stall depends on your client; see [Progressive disclosure](#progressive-disclosure).
-
-Run `npm run count-tokens` for a per-tool breakdown. Use `DISABLED_TOOLS` to trim tools you don't need.
-
-**Default fields by tool type:**
-
-| Tool type | Default fields | Additional with `verbose: true` |
-|-----------|---------------|--------------------------------|
-| Email list/search | `id`, `from`, `subject`, `date`, `snippet` | `to`, `cc`, `isRead`, `folder` |
-| Calendar list/search | `id`, `href`, `title`, `start`, `end`, `location`, `allDay` | `description`, `organizer`, `attendees`, `status`, `recurrence`, `calendar` |
-| Task list/search | `id`, `href`, `title`, `status`, `due`, `priority` | `description`, `categories`, `start`, `completed`, `percentComplete`, `recurrence`, `calendar` |
-| Contact list/search | `id`, `href`, `name`, `emails`, `phones` | `organization`, `title`, `address`, `notes`, `addressBook` |
-| Note search | `path`, `matchedOn`, `title`, `snippet` | `description` |
-| `get_note` | `path`, `title`, `type`, `headings`, `body` | full `frontmatter`, `etag`, `hasFrontmatter` |
-| `list_skills` | `name`, `description` | `path`, `invalid` |
-
-The `folder`, `calendar`, and `addressBook` fields are automatically included in lean responses when no filter is applied (listing across all), and omitted when filtering by a specific one (since it's redundant).
+**→ [Tools, in full](docs/tools.md)** — every tool with its description, the wake gate, progressive disclosure, `DISABLED_TOOLS`, and the per-tool token cost table.
 
 ## License
 

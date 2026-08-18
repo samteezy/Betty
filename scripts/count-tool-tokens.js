@@ -195,6 +195,12 @@ const configs = [
   },
   { label: "Everything, gated (before wake_betty)", groups: [wakeTools] },
   {
+    // wake_betty stays registered after waking — it is how a model recovers from
+    // a re-arm — so the awake tiers carry its cost on top of the capabilities.
+    label: "Everything, awake (gate on, drawers off)",
+    groups: [jmapTools, calTools, taskTools, cardTools, notesTools, skillsTools, wakeTools],
+  },
+  {
     label: "Everything, awake w/ BETTY_PROGRESSIVE_TOOLS=true",
     groups: [notesTools, skillsTools, openTools, wakeTools],
   },

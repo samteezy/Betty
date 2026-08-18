@@ -50,7 +50,9 @@ services:
       # an Origin header is refused unless it is listed here.
       # BETTY_HTTP_ALLOWED_ORIGINS: https://claude.ai
       # The public hostname your tunnel answers on, if you want Betty to check it.
-      # BETTY_HTTP_ALLOWED_HOSTS: betty.example.ts.net
+      # The Host check covers /health too, so keep the loopback entry or the
+      # healthcheck below starts failing with 403 and the container reads unhealthy.
+      # BETTY_HTTP_ALLOWED_HOSTS: betty.example.ts.net,127.0.0.1:8765
 
       # --- Memory and skills (the smallest useful Betty) -----------------
       NOTES_BACKEND: local

@@ -12,8 +12,8 @@
  *    load_skill wake-betty") — the one part of Betty that has to be re-done on
  *    every platform. An always-visible tool whose description is the trigger
  *    travels with her.
- * 2. **Tokens.** A full configuration costs ~2,000 schema tokens on every
- *    request; the gate holds that at ~60 until Betty is actually wanted.
+ * 2. **Tokens.** A full configuration costs ~2,166 schema tokens on every
+ *    request; the gate holds that at ~104 until Betty is actually wanted.
  *
  * The gate lives in process memory, so it is per-*connection*, not per-chat:
  * MCP has no concept of a conversation, and the server sees one `initialize`

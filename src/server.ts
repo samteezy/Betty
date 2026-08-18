@@ -39,7 +39,7 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.7.0";
+export const SERVER_VERSION = "0.7.1";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -226,14 +226,15 @@ export function registerAll(server: McpServer, env: NodeJS.ProcessEnv): Backends
   // model that has to ask twice before it can search would search less.
   //
   // Opt-in, because the second tier is the one that does not pay for itself by
-  // default. Waking already cuts a full configuration from ~2,062 schema tokens
-  // to ~1,105; holding mail and calendar back saves a further ~950, and charges
-  // a second mid-conversation `tools/list_changed` for it. On a client that
-  // fetches the new list synchronously that is a fair trade. On one that defers
+  // default. Waking already cuts a full configuration from ~2,166 schema tokens
+  // to ~104 asleep; holding mail and calendar back takes the awake tier to
+  // ~1,105, saving a further ~1,061 — and charges a second mid-conversation
+  // `tools/list_changed` for it. On a client that fetches the new list
+  // synchronously that is a fair trade. On one that defers
   // tool schemas behind its own search index — Claude Code, and anything else
   // that hands the model a search tool instead of the definitions — it is a bad
-  // one twice over: the client is already doing the withholding, so the ~950 is
-  // not saved at all, and the extra list change is another turn the model spends
+  // one twice over: the client is already doing the withholding, so the ~1,061
+  // is not saved at all, and the extra list change is another turn the model spends
   // discovering that a tool it was just promised is not callable yet. The
   // failure mode is the expensive one, too — a model that decides Betty cannot
   // read mail. Users on a synchronous client can still have the tokens back.

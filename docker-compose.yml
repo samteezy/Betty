@@ -1,0 +1,82 @@
+# Betty at home, reachable from a phone.
+#
+#   1. Put a token in a .env file beside this one (.env is gitignored):
+#        echo "BETTY_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
+#   2. mkdir -p notes   — as yourself, before the first `up`. See the volume note.
+#   3. docker compose up -d
+#   4. Point a tunnel at 127.0.0.1:8765 and add the URL to your mobile client:
+#        https://betty.example.ts.net/mcp/<the token>
+#
+# The port is published to loopback only. Betty reaches your mail and your
+# memory, so the intended shape is a tunnel (Tailscale, Cloudflare) in front,
+# not an open port. Setting `0.0.0.0:8765:8765` puts her on your LAN in the
+# clear — the token is the only thing between the network and your mail.
+
+name: betty
+
+services:
+  betty:
+    build: .
+    restart: unless-stopped
+    # Betty handles SIGTERM herself and closes sessions on the way out; this is
+    # just an init to reap anything she leaves behind.
+    init: true
+
+    ports:
+      # host:container. Loopback on the host — see the note above.
+      - "127.0.0.1:8765:8765"
+
+    volumes:
+      # Where memory, skills, and notes live with NOTES_BACKEND=local. Drop this
+      # (and the two NOTES_ vars below) if you use WebDAV instead.
+      #
+      # Create it yourself first. If Docker has to create it for you it lands
+      # owned by root, and Betty — running as uid 1000 — then starts, answers
+      # /health, wakes, and fails every single write with EACCES. `mkdir -p
+      # notes` as yourself is the whole fix on a single-user box.
+      - ${BETTY_NOTES_DIR:-./notes}:/notes
+
+    # If your notes directory is owned by someone other than uid 1000, run as
+    # its owner instead of the image's `node` user:
+    #   echo "BETTY_UID=$(id -u)" >> .env && echo "BETTY_GID=$(id -g)" >> .env
+    # user: "${BETTY_UID:-1000}:${BETTY_GID:-1000}"
+
+    environment:
+      # --- Remote access -------------------------------------------------
+      # Transport, host, and port are already set in the image; the token is
+      # not, and Betty refuses to serve without one.
+      BETTY_HTTP_TOKEN: ${BETTY_HTTP_TOKEN:?set BETTY_HTTP_TOKEN in .env — openssl rand -hex 32}
+      # Uncomment if a browser-based client needs to reach her. Anything sending
+      # an Origin header is refused unless it is listed here.
+      # BETTY_HTTP_ALLOWED_ORIGINS: https://claude.ai
+      # The public hostname your tunnel answers on, if you want Betty to check it.
+      # BETTY_HTTP_ALLOWED_HOSTS: betty.example.ts.net
+
+      # --- Memory and skills (the smallest useful Betty) -----------------
+      NOTES_BACKEND: local
+      NOTES_ROOT: /notes
+      # Or point her at WebDAV instead, and drop the volume above:
+      # NOTES_BACKEND: webdav
+      # NOTES_ROOT: /you@fastmail.com/Notes
+      # WEBDAV_URL: https://myfiles.fastmail.com
+      # WEBDAV_USERNAME: ${WEBDAV_USERNAME}
+      # WEBDAV_PASSWORD: ${WEBDAV_PASSWORD}
+
+      # --- Optional capabilities -----------------------------------------
+      # Email (Fastmail JMAP — brings contacts with it):
+      # JMAP_TOKEN: ${JMAP_TOKEN}
+      # Email (any IMAP provider):
+      # IMAP_HOST: imap.example.com
+      # IMAP_USER: ${IMAP_USER}
+      # IMAP_PASSWORD: ${IMAP_PASSWORD}
+      # SMTP_HOST: smtp.example.com
+      # SMTP_USER: ${IMAP_USER}
+      # SMTP_PASSWORD: ${IMAP_PASSWORD}
+      # Calendar and tasks:
+      # CALDAV_URL: https://caldav.fastmail.com/
+      # CALDAV_USERNAME: ${CALDAV_USERNAME}
+      # CALDAV_PASSWORD: ${CALDAV_PASSWORD}
+      # Contacts without JMAP email:
+      # CARDDAV_URL: https://carddav.fastmail.com/
+      # CARDDAV_USERNAME: ${CARDDAV_USERNAME}
+      # CARDDAV_PASSWORD: ${CARDDAV_PASSWORD}

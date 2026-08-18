@@ -39,7 +39,7 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.6.1";
+export const SERVER_VERSION = "0.7.0";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a
@@ -591,6 +591,26 @@ export async function connectAll(backends: Backends): Promise<void> {
       // Read after the connects above, so a capability that failed to
       // authenticate is not written into the skill as something Betty offers.
       await seedBundledSkills(backends.notes, backends.notesPaths, liveCapabilities(backends));
+    }
+  }
+}
+
+/**
+ * Let go of everything {@link connectAll} took hold of.
+ *
+ * Stdio never needs this — one Betty lives for the life of the process, and the
+ * process ending is the release. The HTTP host is why it exists: it builds a
+ * Betty per client session, so a session that ends has to give back its mail
+ * connection and its gate timer or a day of phone reconnects would accumulate
+ * both. Never fatal: a backend that is already gone is exactly the state wanted.
+ */
+export async function disconnectAll(backends: Backends): Promise<void> {
+  backends.gate?.stopSweeping();
+  if (backends.email) {
+    try {
+      await backends.email.disconnect();
+    } catch {
+      // Already disconnected, or the socket died first. Nothing to do.
     }
   }
 }

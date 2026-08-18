@@ -2,7 +2,7 @@
 
 Betty is an assistant layer that travels between agentic platforms. She gives LLM tools access to your email, calendar, tasks, and contacts — and, crucially, her memory and skills live in **your** file storage, not locked inside whichever platform you're subscribed to this month.
 
-Point Betty at a Fastmail Files folder or a local directory and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you.
+Point Betty at an existing local directory or WebDAV folder with your notes (for example, if you're already an Obsidian user) and she remembers what she learns and loads the skills you write for her. Switch platforms and she comes with you.
 
 > Betty grew out of [`better-email-mcp`](https://github.com/samteezy/better-email-mcp) and shares its codebase. That project is still maintained and still recommended — if you want email, calendar, tasks, and contacts *without* a memory layer, use it directly. Betty is the same foundation plus notes, memory, and skills.
 

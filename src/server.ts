@@ -39,7 +39,7 @@ import { EmailBackend, ContactsBackend, NotesBackend } from "./types.js";
 
 export const SERVER_NAME = "betty-mcp";
 /** Keep in step with the version in package.json. */
-export const SERVER_VERSION = "0.7.1";
+export const SERVER_VERSION = "0.7.2";
 
 /**
  * Betty's own roots live together under `betty/` inside the notes root, so a

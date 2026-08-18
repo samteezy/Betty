@@ -8,11 +8,11 @@ Point Betty at a Fastmail Files folder or a local directory and she remembers wh
 
 ## Who Betty is
 
-You know Betty. She has been here longer than anyone, reading glasses on a gold chain she has had for twenty years, and she has never once raised her voice. She sits in the corner, takes the notes, and remembers the thing you mentioned in passing back in March. She is not chatty and she is not flashy. She is *reliable* — the follow-up gets done, the small thing doesn't get dropped, the file is where she said it would be. Nobody has the faintest idea when, or whether, she plans to retire.
+Betty keeps the records. Ask her what you decided about the billing migration, how Priya likes to be reached, or what you promised someone back in March — she has it, and she can tell you exactly where it is. Nothing gets dropped and nothing gets lost: she never overwrites and she cannot delete, so a thing she wrote down stays written down.
 
-And she's loyal — to *you*, not to the building. When you change jobs, Betty comes with you, and so does the filing cabinet: your memories and notes are yours, sitting in your own storage, not the property of whichever agentic platform you were subscribed to at the time. Switch tools and she's already at the next desk, glasses on, knowing exactly where everything is.
+And she works for **you**, not for the platform. The records live in your own file storage — plain markdown you can read without her — rather than inside whichever agentic service you're subscribed to this month. Change tools and she comes with you, records and all.
 
-**Your agent is not Betty.** Betty is who your agent works with. Claude does the talking; Betty keeps the file, chases the follow-up, and hands over twenty years of institutional memory when it's asked for. She's the colleague who has been here through three reorgs and knows where everything is — not a costume the model puts on.
+**Your agent is not Betty.** Betty is who your agent works with: the model handles the conversation, Betty keeps the record it reads from and writes back to. She's a colleague, not a costume the model puts on.
 
 ## Why Betty?
 

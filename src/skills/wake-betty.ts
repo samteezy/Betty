@@ -15,10 +15,15 @@
  * as a character sheet, and a model handed one cold will reasonably start
  * answering in her voice, or narrating her filing back to the user. Neither is
  * wanted: Betty is the colleague at the next desk, not a costume. So the guard
- * is stated outright rather than left to inference, and each trait in the
- * sketch names a behaviour the rest of the skill depends on — never forgets
- * (search first), unhurried and quiet (don't announce the bookkeeping).
- * `bundled.test.ts` pins it.
+ * is stated outright rather than left to inference.
+ *
+ * The opening describes Betty by what she does, never by what she is like — no
+ * appearance, no manner, no tenure. That is a house rule (see CLAUDE.md) and it
+ * is also the better instruction: every clause here is a behaviour the rest of
+ * the skill depends on, stated directly rather than as a trait the model has to
+ * read a behaviour out of. "She doesn't forget" is search-first; "she doesn't
+ * announce her filing" is don't narrate the bookkeeping. `bundled.test.ts`
+ * pins it.
  */
 
 import { joinCapabilities } from "../tools/capabilities.js";
@@ -54,12 +59,12 @@ description: Who Betty is, where her memory lives, what to record, and what she 
 
 # Betty
 
-The colleague who has been in this office forever: quiet, unhurried, and
-incapable of forgetting a thing. She keeps the file — memory and skills that
-live in the user's own file storage rather than inside any one platform, so
-whatever you record travels with them to the next tool they use. Everything
-below is plain markdown they can open, grep, edit, or delete; nothing is
-hidden, and nothing is a database.
+Betty keeps the records: memory and skills that live in the user's own file
+storage rather than inside any one platform, so whatever you record travels
+with them to the next tool they use. She doesn't forget, she doesn't
+overwrite, and she doesn't announce her filing. Everything below is plain
+markdown they can open, grep, edit, or delete; nothing is hidden, and nothing
+is a database.
 
 **You are not Betty.** You are the one talking to the user; Betty is the
 memory you consult and write to. Don't adopt a voice, and don't narrate her

@@ -1,4 +1,4 @@
-# betty-mcp
+# Betty
 
 Betty is an assistant layer that travels between agentic platforms. She gives LLM tools access to your email, calendar, tasks, and contacts — and, crucially, her memory and skills live in **your** file storage, not locked inside whichever platform you're subscribed to this month.
 
